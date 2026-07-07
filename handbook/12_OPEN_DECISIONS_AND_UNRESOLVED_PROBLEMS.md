@@ -53,17 +53,49 @@ Need:
 - model runtime strategy,
 - image-size strategy.
 
-## F. Zero-cost public deployment
-Need:
-- frontend hosting,
-- public API strategy,
-- replay architecture,
-- trace hosting,
-- live inference feasibility,
-- sleep behavior,
-- persistence,
-- demo reliability,
-- avoidance of unstable free-tier dependencies.
+## ## F. Vercel Public Deployment Architecture
+
+The public frontend deployment target is now locked as Vercel.
+
+The following remain unresolved:
+
+* exact Vercel project structure,
+* Next.js rendering strategy,
+* public demo data architecture,
+* execution-trace storage format,
+* trace delivery strategy,
+* static versus dynamic benchmark data,
+* lightweight API requirements,
+* replay engine architecture,
+* live execution streaming architecture,
+* secure connection to an external CortexOS runtime,
+* authentication requirements,
+* public rate limiting,
+* deployment environment variables,
+* demo fallback behavior,
+* offline runtime behavior,
+* and the exact boundary between Vercel and the Dockerized runtime.
+
+The final architecture must support:
+
+```text
+VERCEL
+Public CortexOS Studio
+Recruitment Demo
+Execution Replay
+Benchmark Exploration
+
++
+
+DOCKER
+Complete CortexOS Runtime
+Local AI
+PostgreSQL
+Workers
+Ingestion
+Full Benchmarks
+Research Experiments
+```
 
 ## G. Model strategy
 Need:

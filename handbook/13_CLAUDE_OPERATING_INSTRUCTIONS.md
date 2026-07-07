@@ -116,8 +116,59 @@ Design for:
 - dev and production modes.
 
 ---
+## 7. Required Vercel Deployment Discipline
 
-## 7. Frontend discipline
+CortexOS Studio must be designed for public deployment on Vercel.
+
+Do not treat Vercel as the execution environment for the complete CortexOS runtime.
+
+Maintain a strict architectural separation between:
+
+```text
+PUBLIC PRESENTATION AND INTERACTION LAYER
+→ Vercel
+
+FULL AI AND RESEARCH RUNTIME
+→ Docker Compose
+```
+
+When designing any feature, explicitly determine whether it belongs to:
+
+* Vercel Public Demo Mode,
+* Docker Full Runtime Mode,
+* both modes,
+* or future Connected Live Mode.
+
+The Vercel deployment must provide an impressive and meaningful public project experience even when the complete AI runtime is offline.
+
+Use real recorded CortexOS execution traces for replay demonstrations.
+
+Never fabricate benchmark results, token savings, model decisions, page faults, or execution traces.
+
+The frontend architecture should allow the same visualization components to consume both:
+
+```text
+RecordedExecutionEventStream
+```
+
+and:
+
+```text
+LiveExecutionEventStream
+```
+
+through a shared typed event contract.
+
+This separation is an important architectural requirement because it allows CortexOS to remain:
+
+* publicly accessible,
+* zero-cost,
+* visually impressive,
+* technically honest,
+* locally reproducible,
+* and independent of paid AI infrastructure.
+
+## 8. Frontend discipline
 
 CortexOS Studio must visualize real system semantics.
 
@@ -133,7 +184,7 @@ Every major visualization should map to:
 
 ---
 
-## 8. Research discipline
+## 9. Research discipline
 
 Separate:
 - hypothesis,
@@ -152,7 +203,7 @@ Preserve experiment configuration and hardware details.
 
 ---
 
-## 9. Immediate requested next work
+## 10. Immediate requested next work
 
 The next major deliverable should be:
 

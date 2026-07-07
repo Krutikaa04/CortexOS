@@ -21,11 +21,19 @@ The following constraints are locked and must not be weakened:
 6. **Second signature innovation:** Context Compiler
 7. **Product form:** Model-agnostic adaptive inference runtime with a premium visual control and observability frontend called CortexOS Studio.
 8. **Deployment:** Docker-first.
-9. **Cost:** The complete student implementation must be possible at ₹0 mandatory cost.
-10. **AI strategy:** Open-source, local-first, no required commercial LLM API.
-11. **Evaluation:** Every optimization claim must be benchmarked against a conventional baseline.
-12. **Development strategy:** Specification-first. Do not rush into code.
-13. **Portfolio standard:** The final result must be strong enough to serve as a serious large-scale Generative AI / systems engineering recruitment project.
+9. **Public Frontend Deployment:** CortexOS Studio must be designed and deployed on Vercel using the zero-cost deployment path available to the student project.
+10. **Deployment Architecture:** Vercel is the required public deployment target for the CortexOS Studio frontend and public demonstration experience. The complete CortexOS AI runtime must remain Docker-first and locally executable.
+11. **Hybrid Deployment Principle:** The architecture must explicitly separate:
+* the Vercel-hosted public CortexOS Studio,
+* lightweight public-facing endpoints that are technically suitable for the Vercel environment,
+* replayable traces and benchmark demonstrations,
+* and the full Dockerized CortexOS runtime containing local AI inference, PostgreSQL, workers, ingestion, benchmarking, and model execution.
+12. **No Architecture Conflict:** Docker-first and Vercel deployment are complementary requirements. Docker guarantees complete local reproducibility of the full system. Vercel provides the publicly accessible frontend and recruitment demonstration surface.
+13. **Cost:** The complete student implementation must be possible at ₹0 mandatory cost.
+14. **AI strategy:** Open-source, local-first, no required commercial LLM API.
+15. **Evaluation:** Every optimization claim must be benchmarked against a conventional baseline.
+16. **Development strategy:** Specification-first. Do not rush into code.
+17. **Portfolio standard:** The final result must be strong enough to serve as a serious large-scale Generative AI / systems engineering recruitment project.
 
 ## How to use this pack
 
