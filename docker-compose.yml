@@ -1,0 +1,88 @@
+name: cortexos
+
+services:
+  cortex-db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: cortex
+      POSTGRES_PASSWORD: ${CORTEX_DB_PASSWORD:?set CORTEX_DB_PASSWORD in .env}
+      POSTGRES_DB: cortex
+    volumes:
+      - cortex-pgdata:/var/lib/postgresql/data
+    networks: [cortex-internal]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cortex -d cortex"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  cortex-model:
+    image: ollama/ollama:latest
+    entrypoint: ["/bin/sh", "/entrypoint.sh"]
+    environment:
+      CORTEX_REQUIRED_MODELS: "${CORTEX_TASK_MODEL:-qwen2.5:3b-instruct},${CORTEX_EMBED_MODEL:-nomic-embed-text}"
+    volumes:
+      - cortex-models:/root/.ollama
+      - ./infra/ollama-entrypoint.sh:/entrypoint.sh:ro
+    networks: [cortex-internal]
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  cortex-migrate:
+    build: ./api
+    command: ["alembic", "upgrade", "head"]
+    env_file: .env
+    restart: "no"
+    networks: [cortex-internal]
+    depends_on:
+      cortex-db:
+        condition: service_healthy
+
+  cortex-api:
+    build: ./api
+    command: ["uvicorn", "cortex.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    env_file: .env
+    ports:
+      - "8000:8000"
+    volumes:
+      - cortex-ingest:/data/ingest
+      - cortex-traces:/data/traces
+    networks: [cortex-internal, cortex-public]
+    depends_on:
+      cortex-migrate:
+        condition: service_completed_successfully
+      cortex-model:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request;urllib.request.urlopen('http://localhost:8000/health', timeout=3)\""]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  cortex-worker:
+    build: ./api
+    command: ["python", "-m", "cortex.worker"]
+    env_file: .env
+    volumes:
+      - cortex-ingest:/data/ingest
+      - cortex-traces:/data/traces
+    networks: [cortex-internal]
+    depends_on:
+      cortex-migrate:
+        condition: service_completed_successfully
+      cortex-model:
+        condition: service_healthy
+
+volumes:
+  cortex-pgdata:
+  cortex-models:
+  cortex-ingest:
+  cortex-traces:
+
+networks:
+  cortex-internal:
+  cortex-public:

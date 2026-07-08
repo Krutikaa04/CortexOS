@@ -1,0 +1,66 @@
+{
+  "name": "demo-store-v1",
+  "description": "Question suite for the demo store fixture repository. Expected keywords are grounded in the repository's actual code and docs.",
+  "questions": [
+    {
+      "id": "q01",
+      "category": "factual",
+      "question": "What is the access token TTL?",
+      "expected_keywords": [["900", "15 min", "fifteen min"]]
+    },
+    {
+      "id": "q02",
+      "category": "factual",
+      "question": "How long do refresh tokens live?",
+      "expected_keywords": [["30 day", "2592000", "2,592,000"]]
+    },
+    {
+      "id": "q03",
+      "category": "factual",
+      "question": "What currency do payments use?",
+      "expected_keywords": [["INR"]]
+    },
+    {
+      "id": "q04",
+      "category": "factual",
+      "question": "What is the payment gateway timeout?",
+      "expected_keywords": [["30 second", "30s", "GATEWAY_TIMEOUT_SECONDS = 30", "30 "]]
+    },
+    {
+      "id": "q05",
+      "category": "structural",
+      "question": "Which fields does a session record contain?",
+      "expected_keywords": [["session_id"], ["user_id"], ["created_at"], ["expires_at"]]
+    },
+    {
+      "id": "q06",
+      "category": "structural",
+      "question": "How are refresh tokens stored?",
+      "expected_keywords": [["SHA-256", "sha256", "hash"], ["PostgreSQL", "postgres"]]
+    },
+    {
+      "id": "q07",
+      "category": "structural",
+      "question": "What database does the service use for persistence?",
+      "expected_keywords": [["PostgreSQL", "postgres"]]
+    },
+    {
+      "id": "q08",
+      "category": "multi_hop",
+      "question": "Will changing the session record schema affect payments?",
+      "expected_keywords": [["yes", "will affect", "would affect", "likely affect", "break"], ["user_id"], ["charge", "PaymentRoutes", "payment"]]
+    },
+    {
+      "id": "q09",
+      "category": "multi_hop",
+      "question": "Which module breaks if SessionStore.get_session starts returning a different structure?",
+      "expected_keywords": [["payments", "routes", "PaymentRoutes", "charge"]]
+    },
+    {
+      "id": "q10",
+      "category": "multi_hop",
+      "question": "Trace what happens between login and a successful charge for a user.",
+      "expected_keywords": [["login", "AuthService"], ["session", "SessionStore"], ["charge", "gateway", "PaymentRoutes"]]
+    }
+  ]
+}
