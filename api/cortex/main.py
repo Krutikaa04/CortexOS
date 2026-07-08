@@ -11,16 +11,15 @@ from cortex import __version__
 from cortex.config import get_settings
 from cortex.db import get_session_factory
 from cortex.models_client import ModelUnavailableError, get_model_client
+from cortex.routes.benchmarks import router as benchmarks_router
+from cortex.routes.executions import router as executions_router
+from cortex.routes.sources import router as sources_router
 
 logging.basicConfig(
     level=get_settings().log_level,
     format='{"ts":"%(asctime)s","level":"%(levelname)s","logger":"%(name)s","msg":"%(message)s"}',
 )
 log = logging.getLogger("cortex.api")
-
-from cortex.routes.benchmarks import router as benchmarks_router
-from cortex.routes.executions import router as executions_router
-from cortex.routes.sources import router as sources_router
 
 app = FastAPI(title="CortexOS Runtime", version=__version__)
 app.include_router(sources_router)

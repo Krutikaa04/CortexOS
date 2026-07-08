@@ -55,11 +55,46 @@ Development mode (hot reload + local Studio on :3000):
 docker compose -f docker-compose.yml -f docker-compose.dev.yml up
 ```
 
+## CortexOS Studio
+
+The Studio (`studio/`, Next.js) is the visual control plane:
+
+- **Command Center** — runtime health, sources, latest benchmark headline
+- **Playground** — run cortex/baseline queries, watch decisions stream live;
+  optional SVM session mode keeps memory pages resident across questions
+- **Context X-Ray** — per-execution: requirements, included artifacts with
+  representation levels, rejected artifacts *with reasons*, token savings
+- **Benchmark Lab** — paired baseline-vs-cortex suites with honest metrics
+- **Replay Demo** — recorded real traces replayed through the same
+  components (this is what the public Vercel deployment shows)
+
+Local dev: `npm install && npm run dev` in `studio/` (or use the dev
+compose profile). Vercel deployment uses `NEXT_PUBLIC_DEMO_MODE=1` and
+bundles exported traces in `studio/public/traces/`.
+
+## Benchmarking
+
+```bash
+# after ingesting a repository:
+curl -X POST localhost:8000/v1/benchmarks -H 'content-type: application/json' \
+     -d '{"suite": "demo_store"}'
+```
+
+Both pipelines run the same questions on the same snapshot with the same
+models; token counts come from the model runtime itself. No performance
+number is claimed anywhere unless it came from such a run.
+
 ## Repository layout
 
 ```text
 handbook/   locked project definition and design context
 api/        FastAPI control plane + worker (Python)
+  cortex/kernel/     Task Profiler · Requirement Generator · Hybrid
+                     Retriever · Context Compiler · Sufficiency Evaluator
+  cortex/svm/        Semantic Virtual Memory (pages, faults, eviction)
+  cortex/baseline/   conventional top-K RAG baseline
+  cortex/benchmark/  paired benchmark harness + suites
+  cortex/ingestion/  repository → semantic artifacts + edges + embeddings
 studio/     CortexOS Studio frontend (Next.js)
 infra/      container entrypoints and infra scripts
 ```

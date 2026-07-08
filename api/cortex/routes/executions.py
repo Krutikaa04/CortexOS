@@ -120,6 +120,38 @@ async def create_execution(
     return {"execution_id": str(execution_id), "status": "running"}
 
 
+@router.get("")
+async def list_executions(
+    limit: int = 50, session: AsyncSession = Depends(get_session)
+) -> list[dict]:
+    rows = (
+        await session.execute(
+            text(
+                "SELECT id, mode, query, answer, status, failure_reason, metrics, "
+                "source_version_id, session_id, started_at, finished_at "
+                "FROM execution ORDER BY started_at DESC LIMIT :limit"
+            ),
+            {"limit": min(limit, 200)},
+        )
+    ).all()
+    return [
+        {
+            "id": str(r.id),
+            "mode": r.mode,
+            "query": r.query,
+            "answer": r.answer,
+            "status": r.status,
+            "failure_reason": r.failure_reason,
+            "metrics": r.metrics,
+            "source_version_id": str(r.source_version_id),
+            "session_id": str(r.session_id) if r.session_id else None,
+            "started_at": r.started_at.isoformat(),
+            "finished_at": r.finished_at.isoformat() if r.finished_at else None,
+        }
+        for r in rows
+    ]
+
+
 @router.get("/{execution_id}")
 async def get_execution(
     execution_id: uuid.UUID, session: AsyncSession = Depends(get_session)
