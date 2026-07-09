@@ -11,7 +11,11 @@ FROM python:3.12-slim
 RUN apt-get update \
     && apt-get install -y --no-install-recommends git \
     && rm -rf /var/lib/apt/lists/* \
-    && useradd --create-home --uid 1000 cortex
+    && useradd --create-home --uid 1000 cortex \
+    # data mount points must be writable by the non-root runtime user;
+    # named volumes inherit this ownership on first use
+    && mkdir -p /data/ingest /data/traces \
+    && chown -R cortex:cortex /data
 
 WORKDIR /app
 COPY --from=builder /install /usr/local

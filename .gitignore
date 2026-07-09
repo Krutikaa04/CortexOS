@@ -23,6 +23,9 @@ data/
 traces/
 *.log
 
+# Vercel local link metadata
+.vercel/
+
 # OS / editor
 .DS_Store
 Thumbs.db

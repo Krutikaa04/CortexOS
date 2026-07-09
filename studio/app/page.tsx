@@ -5,23 +5,44 @@
 // real runtime state — nothing is fabricated.
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "@/lib/api";
 import type { BenchmarkSummary, SourceSummary } from "@/lib/types";
+import { AddSourceForm } from "@/components/AddSourceForm";
+
+const INGEST_POLL_MS = 5_000;
 
 export default function CommandCenter() {
   const [sources, setSources] = useState<SourceSummary[] | null>(null);
   const [benchmarks, setBenchmarks] = useState<BenchmarkSummary[] | null>(null);
   const [offline, setOffline] = useState(false);
+  const pollRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const refresh = useCallback(async () => {
+    try {
+      const [s, b] = await Promise.all([api.sources(), api.benchmarks()]);
+      setSources(s);
+      setBenchmarks(b);
+      setOffline(false);
+      // Keep refreshing while any source is still ingesting
+      if (pollRef.current) clearTimeout(pollRef.current);
+      const ingesting = s.some(
+        (src) => src.latest_version?.status === "ingesting" || !src.latest_version,
+      );
+      if (ingesting) {
+        pollRef.current = setTimeout(refresh, INGEST_POLL_MS);
+      }
+    } catch {
+      setOffline(true);
+    }
+  }, []);
 
   useEffect(() => {
-    Promise.all([api.sources(), api.benchmarks()])
-      .then(([s, b]) => {
-        setSources(s);
-        setBenchmarks(b);
-      })
-      .catch(() => setOffline(true));
-  }, []);
+    refresh();
+    return () => {
+      if (pollRef.current) clearTimeout(pollRef.current);
+    };
+  }, [refresh]);
 
   const latestDone = benchmarks?.find(
     (b) => b.status === "succeeded" && b.summary?.comparison,
@@ -90,6 +111,7 @@ export default function CommandCenter() {
               query →
             </Link>
           </div>
+          <AddSourceForm onQueued={refresh} />
           <div className="divide-y divide-ink-800">
             {sources === null && !offline && (
               <div className="p-4 text-sm text-ink-500">loading…</div>
