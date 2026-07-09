@@ -13,7 +13,8 @@ import type {
 export const API_URL =
   process.env.NEXT_PUBLIC_CORTEX_API_URL ?? "http://localhost:8000";
 
-export const DEMO_MODE = process.env.NEXT_PUBLIC_DEMO_MODE === "1";
+// export const DEMO_MODE = process.env.NEXT_PUBLIC_DEMO_MODE === "1";
+export const DEMO_MODE = process.env.NEXT_PUBLIC_DEMO_MODE === "0";
 
 async function get<T>(path: string): Promise<T> {
   const res = await fetch(`${API_URL}${path}`, { cache: "no-store" });
