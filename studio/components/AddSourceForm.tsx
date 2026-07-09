@@ -6,7 +6,8 @@
 // to ingest into on the public deployment.
 
 import { useState } from "react";
-import { api, DEMO_MODE } from "@/lib/api";
+import { api } from "@/lib/api";
+//import { api, DEMO_MODE } from "@/lib/api";
 
 export function AddSourceForm({ onQueued }: { onQueued: () => void }) {
   const [uri, setUri] = useState("");
@@ -14,7 +15,7 @@ export function AddSourceForm({ onQueued }: { onQueued: () => void }) {
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  if (DEMO_MODE) return null;
+  // if (DEMO_MODE) return null;
 
   const submit = async () => {
     const trimmed = uri.trim();
