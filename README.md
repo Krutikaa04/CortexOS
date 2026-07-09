@@ -60,8 +60,12 @@ docker compose -f docker-compose.yml -f docker-compose.dev.yml up
 The Studio (`studio/`, Next.js) is the visual control plane:
 
 - **Command Center** — runtime health, sources, latest benchmark headline
-- **Playground** — run cortex/baseline queries, watch decisions stream live;
-  optional SVM session mode keeps memory pages resident across questions
+- **Playground** — ask a question and get the answer with proof of cost: by
+  default every question also runs through a conventional RAG pipeline, and
+  a savings card shows the measured token difference priced at public
+  commercial API list rates (clearly labeled — CortexOS itself runs locally
+  for ₹0). Runtime decisions are one click away; optional SVM session mode
+  keeps memory pages resident across questions
 - **Context X-Ray** — per-execution: requirements, included artifacts with
   representation levels, rejected artifacts *with reasons*, token savings
 - **Benchmark Lab** — paired baseline-vs-cortex suites with honest metrics
