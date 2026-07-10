@@ -21,7 +21,7 @@ from cortex.db import get_session_factory
 from cortex.ingestion.gitfetch import fetch_repository
 from cortex.ingestion.markdown_parser import parse_markdown_file
 from cortex.ingestion.python_parser import ParsedEdge, parse_python_file
-from cortex.jobs import HANDLERS
+from cortex.jobs import HANDLERS, JobCancelled, checkpoint
 from cortex.models_client import get_model_client
 from cortex.tokens import estimate_tokens
 
@@ -46,6 +46,7 @@ async def handle_ingest_source(job_id: uuid.UUID, payload: dict[str, Any]) -> No
     uri = payload["uri"]
     ref = payload.get("ref")
 
+    await checkpoint(job_id, stage="cloning")
     worktree, commit_sha = fetch_repository(uri, ref)
     factory = get_session_factory()
 
@@ -58,20 +59,36 @@ async def handle_ingest_source(job_id: uuid.UUID, payload: dict[str, Any]) -> No
     stats: dict[str, Any] = {"files": 0, "skipped": 0, "artifacts": 0, "edges": 0,
                              "embeddings": 0, "baseline_chunks": 0, "parse_fallbacks": 0}
 
-    async with factory() as session:
-        files = await _ingest_files(session, version_id, worktree, stats)
-        await session.commit()
+    try:
+        await checkpoint(job_id, stage="parsing")
+        async with factory() as session:
+            files = await _ingest_files(session, version_id, worktree, stats)
+            await session.commit()
 
-    async with factory() as session:
-        unresolved_edges = await _parse_files(session, version_id, files, stats)
-        await session.commit()
+        async with factory() as session:
+            unresolved_edges = await _parse_files(session, version_id, files, stats)
+            await session.commit()
 
-    async with factory() as session:
-        await _link_edges(session, version_id, unresolved_edges, stats)
-        await session.commit()
+        await checkpoint(job_id, stage="linking")
+        async with factory() as session:
+            await _link_edges(session, version_id, unresolved_edges, stats)
+            await session.commit()
 
-    await _embed_artifacts(version_id, stats)
-    await _build_baseline_chunks(version_id, files, stats)
+        await _embed_artifacts(job_id, version_id, stats)
+        await _build_baseline_chunks(job_id, version_id, files, stats)
+        await checkpoint(job_id, stage="finalizing")
+    except JobCancelled:
+        # A cancelled ingestion must never surface as a READY version.
+        # Writes so far are idempotent upserts, so a later re-ingest of the
+        # same commit resumes cleanly.
+        async with factory() as session:
+            await session.execute(
+                text("UPDATE source_version SET status = 'failed' "
+                     "WHERE id = :id AND status = 'ingesting'"),
+                {"id": version_id},
+            )
+            await session.commit()
+        raise
 
     async with factory() as session:
         await session.execute(
@@ -335,15 +352,34 @@ async def _link_edges(
         stats["edges"] += 1
 
 
-async def _embed_artifacts(version_id: uuid.UUID, stats: dict) -> None:
-    """EMBED: batch-embed raw text of artifacts missing an embedding."""
+async def _embed_artifacts(job_id: uuid.UUID, version_id: uuid.UUID, stats: dict) -> None:
+    """EMBED: batch-embed raw text of artifacts missing an embedding.
+
+    Reports honest done/total progress and checks for cancellation between
+    batches — each batch is a safe boundary (embeddings are upserts).
+    """
     from cortex.config import get_settings
 
     model_name = get_settings().embed_model
     client = get_model_client()
     factory = get_session_factory()
 
+    async with factory() as session:
+        total = (
+            await session.execute(
+                text(
+                    "SELECT count(*) FROM semantic_artifact a "
+                    "WHERE a.source_version_id = :vid AND NOT EXISTS ("
+                    "  SELECT 1 FROM artifact_embedding e "
+                    "  WHERE e.artifact_id = a.id AND e.representation = 'raw' "
+                    "        AND e.model_name = :model)"
+                ),
+                {"vid": version_id, "model": model_name},
+            )
+        ).scalar_one()
+
     while True:
+        await checkpoint(job_id, stage="embedding", done=stats["embeddings"], total=total)
         async with factory() as session:
             rows = (
                 await session.execute(
@@ -377,7 +413,9 @@ async def _embed_artifacts(version_id: uuid.UUID, stats: dict) -> None:
         log.info("embedded %d artifacts so far", stats["embeddings"])
 
 
-async def _build_baseline_chunks(version_id: uuid.UUID, files: list[dict], stats: dict) -> None:
+async def _build_baseline_chunks(
+    job_id: uuid.UUID, version_id: uuid.UUID, files: list[dict], stats: dict
+) -> None:
     """BASELINE: conventional fixed-size chunking + embeddings.
 
     Same source snapshot, same embedding model as the semantic artifacts —
@@ -389,7 +427,9 @@ async def _build_baseline_chunks(version_id: uuid.UUID, files: list[dict], stats
     overlap_chars = BASELINE_OVERLAP_TOKENS * 4
 
     async with factory() as session:
-        for f in files:
+        for done, f in enumerate(files):
+            # per-file boundary is safe: chunks are keyed on (file, index)
+            await checkpoint(job_id, stage="baseline_chunks", done=done, total=len(files))
             content = f["content"]
             index = 0
             pos = 0

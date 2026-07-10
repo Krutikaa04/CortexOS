@@ -23,6 +23,15 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     api_token: str = ""
 
+    # Comma-separated job kinds this worker claims (its workload lane).
+    # Empty = claim every registered kind (single-worker dev setups).
+    worker_kinds: str = ""
+
+    # Model used for internal structured steps (e.g. requirement generation).
+    # Defaults to the task model; point it at a smaller local model to speed
+    # up internal reasoning without touching answer quality.
+    internal_model: str = ""
+
     ingest_dir: str = "/data/ingest"
     traces_dir: str = "/data/traces"
 

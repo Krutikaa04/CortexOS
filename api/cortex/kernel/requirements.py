@@ -47,12 +47,25 @@ class Requirement:
         return {"id": self.id, "description": self.description, "keywords": self.keywords}
 
 
-async def generate_requirements(query: str, profile: TaskProfile) -> tuple[list[Requirement], str]:
-    """Returns (requirements, strategy) where strategy is 'model' or 'heuristic'."""
+async def generate_requirements(
+    query: str, profile: TaskProfile, *, allow_model: bool = True
+) -> tuple[list[Requirement], str]:
+    """Returns (requirements, strategy) where strategy is 'model' or 'heuristic'.
+
+    allow_model=False is the fast path: skip the requirement-decomposition
+    LLM call entirely (measured at 11-43s on local CPU) and use the
+    deterministic heuristic. Internal structured calls use the configurable
+    internal model role, which defaults to the task model.
+    """
+    from cortex.config import get_settings
+
     max_reqs = {"factual": 3, "structural": 4, "multi_hop": 6}[profile.task_type]
+    if not allow_model:
+        return _heuristic_requirements(query, profile, max_reqs), "heuristic"
     try:
         result = await get_model_client().generate(
             _PROMPT.format(query=query, max_reqs=max_reqs),
+            model=get_settings().internal_model or None,
             temperature=0.0,
             max_tokens=512,
         )

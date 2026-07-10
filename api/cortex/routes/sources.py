@@ -66,21 +66,7 @@ async def list_sources(session: AsyncSession = Depends(get_session)) -> list[dic
 
 @router.get("/jobs/{job_id}")
 async def get_job(job_id: uuid.UUID, session: AsyncSession = Depends(get_session)) -> dict:
-    row = (
-        await session.execute(
-            text("SELECT id, kind, status, attempts, error, created_at, finished_at "
-                 "FROM job WHERE id = :id"),
-            {"id": job_id},
-        )
-    ).first()
-    if row is None:
-        raise HTTPException(status_code=404, detail="job not found")
-    return {
-        "id": str(row.id),
-        "kind": row.kind,
-        "status": row.status,
-        "attempts": row.attempts,
-        "error": row.error,
-        "created_at": row.created_at.isoformat(),
-        "finished_at": row.finished_at.isoformat() if row.finished_at else None,
-    }
+    """Compatibility alias for GET /v1/jobs/{job_id}."""
+    from cortex.routes.jobs import get_job as get_job_v1
+
+    return await get_job_v1(job_id, session)

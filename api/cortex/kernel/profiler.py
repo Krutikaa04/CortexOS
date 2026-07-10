@@ -8,10 +8,14 @@ DIFFERENT budgets, unlike fixed top-K RAG which treats every task the same.
 import re
 from dataclasses import dataclass
 
-# Words suggesting the answer spans multiple entities / dependency hops
+# Words suggesting the answer spans multiple entities / dependency hops.
+# Inflected forms matter: "what breaks if X changes" must route DEEP.
 _MULTI_HOP_MARKERS = re.compile(
-    r"\b(affect|impact|break|depend|depends|dependency|change|changing|"
-    r"propagate|downstream|upstream|ripple|consequence|if\s+i\s+)\b",
+    r"\b(affects?|affected|impacts?|impacted|breaks?|broke|broken|"
+    r"depends?|depended|dependenc(?:y|ies)|changes?|changed|changing|"
+    r"propagates?|downstream|upstream|ripple|consequences?|"
+    r"trace|compare|versus|vs)\b"
+    r"|\bif\s+\w+\s",
     re.IGNORECASE,
 )
 # Words suggesting a simple factual lookup

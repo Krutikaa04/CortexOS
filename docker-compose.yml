@@ -63,10 +63,32 @@ services:
       timeout: 5s
       retries: 6
 
+  # Ingestion lane: user-visible background work. A long benchmark can
+  # never block it because this worker only claims ingestion jobs.
   cortex-worker:
     build: ./api
     command: ["python", "-m", "cortex.worker"]
     env_file: .env
+    environment:
+      CORTEX_WORKER_KINDS: "ingest_source"
+    volumes:
+      - cortex-ingest:/data/ingest
+      - cortex-traces:/data/traces
+    networks: [cortex-internal]
+    depends_on:
+      cortex-migrate:
+        condition: service_completed_successfully
+      cortex-model:
+        condition: service_healthy
+
+  # Benchmark lane: long-running low-priority research work, isolated so
+  # it only competes for the local model, never for the job queue.
+  cortex-worker-benchmark:
+    build: ./api
+    command: ["python", "-m", "cortex.worker"]
+    env_file: .env
+    environment:
+      CORTEX_WORKER_KINDS: "run_benchmark"
     volumes:
       - cortex-ingest:/data/ingest
       - cortex-traces:/data/traces

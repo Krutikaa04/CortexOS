@@ -247,8 +247,14 @@ class Job(Base):
     kind: Mapped[str] = mapped_column(String(32), nullable=False)
     # 'ingest_source' | 'run_benchmark' | 'reap_orphans'
     payload: Mapped[dict] = mapped_column(JSONB, default=dict, server_default=text("'{}'::jsonb"), nullable=False)
-    status: Mapped[str] = mapped_column(String(16), default="queued", nullable=False, index=True)
-    # 'queued' | 'running' | 'waiting_model' | 'succeeded' | 'failed'
+    status: Mapped[str] = mapped_column(String(32), default="queued", nullable=False, index=True)
+    # 'queued' | 'running' | 'waiting_model' | 'cancellation_requested'
+    # | 'succeeded' | 'failed' | 'cancelled'
+    # Real progress reported by the worker at safe boundaries. `stage` is a
+    # short machine name (e.g. 'cloning', 'embedding'); `progress` carries
+    # {"done": int, "total": int|null} when a total is honestly known.
+    stage: Mapped[str | None] = mapped_column(String(32))
+    progress: Mapped[dict | None] = mapped_column(JSONB)
     attempts: Mapped[int] = mapped_column(
         Integer, default=0, server_default="0", nullable=False
     )

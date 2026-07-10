@@ -66,12 +66,39 @@ async def run_cortex_execution(
 
     await emitter.emit(EventType.TASK_RECEIVED, {"query": query, "mode": "cortex"})
 
-    # --- 1. profile ---
+    # --- 1. profile + deterministic path routing ---
+    # FAST: simple factual questions skip the requirement-decomposition LLM
+    # call (measured 11-43s per question on local CPU) — heuristic
+    # requirements retrieve just as well for single-fact lookups.
+    # DEEP: structural and multi-hop questions keep full decomposition.
+    # The router is deterministic: no LLM call decides whether to call an LLM.
     profile = profile_task(query)
-    await emitter.emit(EventType.TASK_PROFILED, profile.as_dict())
+    fast_path = profile.task_type == "factual"
+    path = "fast" if fast_path else "deep"
+    decisions: list[dict[str, str]] = [
+        {
+            "operation": "requirement_generation",
+            "decision": "SKIP" if fast_path else "EXECUTE",
+            "reason": (
+                "fast path: factual question, heuristic requirements suffice"
+                if fast_path
+                else f"{profile.task_type} question needs model decomposition"
+            ),
+        }
+    ]
+    await emitter.emit(EventType.TASK_PROFILED, {**profile.as_dict(), "path": path})
+
+    generation_calls = 0
+    embedding_calls = 0
 
     # --- 2. requirements ---
-    requirements, strategy = await generate_requirements(query, profile)
+    t_requirements = time.monotonic()
+    requirements, strategy = await generate_requirements(
+        query, profile, allow_model=not fast_path
+    )
+    requirements_ms = int((time.monotonic() - t_requirements) * 1000)
+    if strategy == "model":
+        generation_calls += 1
     await emitter.emit(
         EventType.REQUIREMENTS_CREATED,
         {"strategy": strategy, "requirements": [r.as_dict() for r in requirements]},
@@ -105,6 +132,7 @@ async def run_cortex_execution(
         t_retrieval = time.monotonic()
         candidates = await retrieve(source_version_id, requirements, profile)
         retrieval_ms = int((time.monotonic() - t_retrieval) * 1000)
+        embedding_calls += 1  # retriever embeds all requirements in one batch
         for c in candidates[:30]:
             await emitter.emit(
                 EventType.CANDIDATE_FOUND,
@@ -123,7 +151,9 @@ async def run_cortex_execution(
         for c in reused_candidates:
             resident_covered |= c.requirements
 
+        t_compile = time.monotonic()
         context = compile_context(fresh_candidates, profile)
+        compile_ms = int((time.monotonic() - t_compile) * 1000)
         for rejection in context.rejected:
             await emitter.emit(
                 EventType.CANDIDATE_REJECTED,
@@ -196,6 +226,7 @@ async def run_cortex_execution(
             {"estimated_prompt_tokens": estimate_tokens(prompt), "round": round_no},
         )
         result = await client.generate(prompt)
+        generation_calls += 1
         answer = result["text"].strip()
         total_input_tokens += result["input_tokens"]
         total_output_tokens += result["output_tokens"]
@@ -213,7 +244,25 @@ async def run_cortex_execution(
         )
         await emitter.emit(EventType.SUFFICIENCY_CHECKED, sufficiency.as_dict())
         if sufficiency.sufficient or round_no == MAX_ROUNDS:
+            decisions.append(
+                {
+                    "operation": "context_expansion",
+                    "decision": "SKIP",
+                    "reason": (
+                        "deterministic sufficiency passed"
+                        if sufficiency.sufficient
+                        else "round limit reached"
+                    ),
+                }
+            )
             break
+        decisions.append(
+            {
+                "operation": "context_expansion",
+                "decision": "ESCALATE",
+                "reason": "; ".join(sufficiency.reasons),
+            }
+        )
 
         # --- expand and retry ---
         profile.context_budget_tokens = int(
@@ -242,6 +291,15 @@ async def run_cortex_execution(
             "retrieval_ms": retrieval_ms,
             "inference_ms": inference_ms,
             "total_ms": int((time.monotonic() - t_start) * 1000),
+            # inference-budget instrumentation: where the time and model
+            # invocations actually went, and why each optional operation
+            # ran or was skipped
+            "path": path,
+            "requirements_ms": requirements_ms,
+            "compile_ms": compile_ms,
+            "generation_calls": generation_calls,
+            "embedding_calls": embedding_calls,
+            "decisions": decisions,
         }
     )
     if session_id is not None:

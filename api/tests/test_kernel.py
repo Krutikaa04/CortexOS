@@ -141,3 +141,35 @@ def test_heuristic_requirements_from_symbols():
     assert len(reqs) >= 2
     joined = " ".join(r.description for r in reqs)
     assert "AuthService" in joined or "session_store" in joined
+
+
+# ------------------------------------------------------------ path routing
+
+
+def test_fast_path_skips_requirement_model_call():
+    """Factual questions must not pay the requirement-decomposition LLM call."""
+    import asyncio
+
+    from cortex.kernel.requirements import generate_requirements
+
+    profile = profile_task("What is the payment gateway timeout?")
+    assert profile.task_type == "factual"
+
+    # allow_model=False must return heuristic requirements without touching
+    # the model client at all (would raise: no runtime in unit tests).
+    reqs, strategy = asyncio.get_event_loop().run_until_complete(
+        generate_requirements("What is the payment gateway timeout?", profile,
+                              allow_model=False)
+    )
+    assert strategy == "heuristic"
+    assert len(reqs) >= 1
+
+
+def test_deep_path_for_change_impact_questions():
+    profile = profile_task("What breaks if SessionStore.get_session changes its return type?")
+    assert profile.task_type == "multi_hop"  # deep path
+
+
+def test_structural_questions_stay_deep():
+    profile = profile_task("Which components import the auth service?")
+    assert profile.task_type in ("structural", "multi_hop")

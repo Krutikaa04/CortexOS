@@ -24,11 +24,28 @@ CortexOS Studio (Next.js)          — visual control & observability frontend
         │
 CortexOS Runtime API (FastAPI)     — task profiling, retrieval, context
         │                            compilation, SVM, execution, events
-cortex-worker                      — ingestion & benchmark jobs
+cortex-worker                      — ingestion lane (ingest_source jobs)
+cortex-worker-benchmark            — benchmark lane (run_benchmark jobs)
         │
 PostgreSQL + pgvector              — knowledge, embeddings, traces, queue
 Ollama                             — local open-source models (CPU-friendly)
 ```
+
+Workers claim jobs by lane (`CORTEX_WORKER_KINDS`), so a long-running
+benchmark can never block repository ingestion. Jobs are inspectable and
+cooperatively cancellable:
+
+```bash
+GET  /v1/jobs/{id}          # status, stage, honest done/total progress
+POST /v1/jobs/{id}/cancel   # queued → cancelled; running → cancellation_requested,
+                            # acknowledged at the worker's next safe checkpoint
+```
+
+Interactive questions route deterministically: simple factual questions take
+a **fast path** (heuristic requirements, one embedding batch, one generation
+call), while structural and change-impact questions keep the full deep
+pipeline. Every execution's metrics record the path, per-stage timings,
+model-call counts, and each skip/execute/escalate decision with its reason.
 
 Everything runs locally through Docker Compose at zero mandatory cost.
 The Studio frontend additionally deploys to Vercel as a public demo that

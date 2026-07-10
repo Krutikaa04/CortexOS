@@ -32,11 +32,23 @@ async def claim_and_run_one() -> bool:
     import cortex.benchmark.runner  # noqa: F401 — registers the run_benchmark handler
     import cortex.ingestion.pipeline  # noqa: F401 — registers the ingest_source handler
 
-    job = await claim_next_job()
+    job = await claim_next_job(kinds=_lane_kinds())
     if job is None:
         return False
     await run_job(job)
     return True
+
+
+def _lane_kinds() -> list[str] | None:
+    """Job kinds this worker claims — its workload lane.
+
+    CORTEX_WORKER_KINDS="ingest_source" gives an ingestion-only worker that
+    a long benchmark can never block. Empty means claim everything.
+    """
+    raw = get_settings().worker_kinds.strip()
+    if not raw:
+        return None
+    return [k.strip() for k in raw.split(",") if k.strip()]
 
 
 async def main() -> None:

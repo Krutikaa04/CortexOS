@@ -144,6 +144,27 @@ export interface QuestionModeResult {
   rounds?: number;
 }
 
+export interface JobInfo {
+  id: string;
+  kind: string;
+  status:
+    | "queued"
+    | "running"
+    | "waiting_model"
+    | "cancellation_requested"
+    | "succeeded"
+    | "failed"
+    | "cancelled";
+  stage: string | null;
+  progress: { done: number; total: number | null } | null;
+  attempts: number;
+  error: string | null;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  uri: string | null;
+}
+
 export interface HealthStatus {
   status: "ok" | "degraded" | "unavailable";
   version?: string;

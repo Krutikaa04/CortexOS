@@ -24,7 +24,7 @@ from sqlalchemy import text
 from cortex.baseline.pipeline import run_baseline_execution
 from cortex.config import get_settings
 from cortex.db import get_session_factory
-from cortex.jobs import HANDLERS
+from cortex.jobs import HANDLERS, JobCancelled, checkpoint
 from cortex.kernel.pipeline import run_cortex_execution
 
 log = logging.getLogger("cortex.benchmark")
@@ -54,9 +54,13 @@ async def handle_run_benchmark(job_id: uuid.UUID, payload: dict[str, Any]) -> No
 
     results: list[dict] = []
     try:
-        for q in questions:
+        for i, q in enumerate(questions):
+            # Safe cancellation boundary: between questions nothing is half-done.
+            await checkpoint(job_id, stage="benchmarking", done=i, total=len(questions))
             row: dict[str, Any] = {"id": q["id"], "category": q.get("category", "unknown")}
             for mode in MODES:
+                # Also safe between the two mode executions of one question.
+                await checkpoint(job_id)
                 execution_id = await _create_execution(run_id, version_id, mode, q["question"])
                 try:
                     if mode == "baseline":
@@ -90,6 +94,17 @@ async def handle_run_benchmark(job_id: uuid.UUID, payload: dict[str, Any]) -> No
                 {"id": run_id, "report": _json(report)},
             )
             await session.commit()
+    except JobCancelled:
+        async with factory() as session:
+            await session.execute(
+                text(
+                    "UPDATE benchmark_run SET status = 'cancelled', "
+                    "finished_at = now() WHERE id = :id"
+                ),
+                {"id": run_id},
+            )
+            await session.commit()
+        raise
     except Exception as exc:
         async with factory() as session:
             await session.execute(

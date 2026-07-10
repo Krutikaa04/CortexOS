@@ -7,6 +7,7 @@ import type {
   Execution,
   ExecutionEvent,
   HealthStatus,
+  JobInfo,
   SourceSummary,
 } from "./types";
 
@@ -40,6 +41,8 @@ export const api = {
   sources: () => get<SourceSummary[]>("/v1/sources"),
   ingestSource: (uri: string, displayName?: string) =>
     post<{ job_id: string }>("/v1/sources", { uri, display_name: displayName }),
+  job: (id: string) => get<JobInfo>(`/v1/jobs/${id}`),
+  cancelJob: (id: string) => post<JobInfo>(`/v1/jobs/${id}/cancel`, {}),
   createExecution: (body: {
     query: string;
     mode: string;
