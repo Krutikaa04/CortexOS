@@ -48,6 +48,12 @@ export interface Execution {
   finished_at: string | null;
 }
 
+export interface BudgetDecision {
+  operation: string;
+  decision: "SKIP" | "EXECUTE" | "ESCALATE";
+  reason: string;
+}
+
 export interface ExecutionMetrics {
   input_tokens?: number;
   output_tokens?: number;
@@ -60,13 +66,128 @@ export interface ExecutionMetrics {
   rounds?: number;
   retrieval_ms?: number;
   inference_ms?: number;
+  compile_ms?: number;
+  requirements_ms?: number;
   total_ms?: number;
+  // inference-budget instrumentation
+  path?: "fast" | "deep";
+  intent?: "explain" | "debug" | "generate";
+  generation_calls?: number;
+  embedding_calls?: number;
+  decisions?: BudgetDecision[];
   svm?: {
     pages_reused: number;
     pages_faulted_in: number;
     resident_pages: number;
     resident_tokens: number;
   };
+}
+
+// --- knowledge graph / architecture (from /v1/sources/{version}/…) ---
+
+export interface GraphNode {
+  id: string;
+  qualified_name: string;
+  label: string;
+  kind: string;
+  path: string;
+  language: string | null;
+  tokens: number;
+  degree: number;
+}
+
+export interface GraphEdge {
+  from: string;
+  to: string;
+  kind: string;
+}
+
+export interface RepoGraph {
+  version_id: string;
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+  truncated: boolean;
+}
+
+export interface ArchitectureFile {
+  id: string;
+  path: string;
+  language: string | null;
+  artifacts: number;
+  tokens: number;
+}
+
+export interface ArchitectureEdge {
+  from: string;
+  to: string;
+  kind: string;
+  weight: number;
+}
+
+export interface Architecture {
+  version_id: string;
+  files: ArchitectureFile[];
+  edges: ArchitectureEdge[];
+}
+
+export interface ArtifactDetail {
+  id: string;
+  qualified_name: string;
+  kind: string;
+  path: string;
+  language: string | null;
+  span_start_line: number;
+  span_end_line: number;
+  tokens: number;
+  raw_text: string;
+  summary_text: string | null;
+  facts: unknown[] | null;
+  github_url: string | null;
+}
+
+// --- Change Impact Guard ---
+
+export interface ImpactArtifact {
+  qualified_name: string;
+  symbol: string;
+  path: string;
+  kind: string;
+  edge_kind: string | null;
+  hop: string;
+}
+
+export interface ImpactReport {
+  risk_level: "HIGH" | "MEDIUM" | "LOW";
+  risk_reasons: string[];
+  confidence: number;
+  sensitivity: string[];
+  changed_files: string[];
+  changed_artifacts: ImpactArtifact[];
+  direct_impact: ImpactArtifact[];
+  indirect_impact: ImpactArtifact[];
+  problems: string[];
+  recommended_tests: string[];
+  suggested_patch: string;
+  summary: string;
+  narrative_raw: string;
+  metrics: ExecutionMetrics & { model_calls?: number };
+  evidence_grounded: boolean;
+}
+
+export interface Neighbors {
+  depends_on: ImpactArtifact[];
+  dependents: ImpactArtifact[];
+}
+
+export interface ArtifactRef {
+  id: string;
+  qualified_name: string;
+  kind: string;
+  path: string;
+  language: string | null;
+  span_start_line: number;
+  span_end_line: number;
+  github_url: string | null;
 }
 
 export interface SourceSummary {

@@ -2,12 +2,18 @@
 // no offline/demo fallback — all data comes from real executions.
 
 import type {
+  Architecture,
+  ArtifactDetail,
+  ArtifactRef,
   BenchmarkRun,
   BenchmarkSummary,
   Execution,
   ExecutionEvent,
   HealthStatus,
+  ImpactReport,
   JobInfo,
+  Neighbors,
+  RepoGraph,
   SourceSummary,
 } from "./types";
 
@@ -43,6 +49,7 @@ export const api = {
   createExecution: (body: {
     query: string;
     mode: string;
+    source_version_id?: string | null;
     session_id?: string | null;
   }) => post<{ execution_id: string }>("/v1/executions", body),
   execution: (id: string) => get<Execution>(`/v1/executions/${id}`),
@@ -52,4 +59,25 @@ export const api = {
   benchmark: (id: string) => get<BenchmarkRun>(`/v1/benchmarks/${id}`),
   runBenchmark: (suite: string) =>
     post<{ benchmark_run_id: string }>("/v1/benchmarks", { suite }),
+
+  // knowledge graph / architecture / source code (real ingested data)
+  graph: (versionId: string, limit = 160, kinds?: string) =>
+    get<RepoGraph>(
+      `/v1/sources/${versionId}/graph?limit=${limit}` +
+        (kinds ? `&kinds=${encodeURIComponent(kinds)}` : ""),
+    ),
+  architecture: (versionId: string) =>
+    get<Architecture>(`/v1/sources/${versionId}/architecture`),
+  artifact: (versionId: string, artifactId: string) =>
+    get<ArtifactDetail>(`/v1/sources/${versionId}/artifacts/${artifactId}`),
+  lookup: (versionId: string, qualifiedName: string) =>
+    get<ArtifactRef>(
+      `/v1/sources/${versionId}/lookup?qualified_name=${encodeURIComponent(qualifiedName)}`,
+    ),
+  neighbors: (versionId: string, artifactId: string) =>
+    get<Neighbors>(`/v1/sources/${versionId}/artifacts/${artifactId}/neighbors`),
+
+  // Change Impact Guard — analyze a diff against the repository graph.
+  impact: (versionId: string, diff: string) =>
+    post<ImpactReport>(`/v1/sources/${versionId}/impact`, { diff }),
 };

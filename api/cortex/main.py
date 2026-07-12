@@ -13,6 +13,8 @@ from cortex.db import get_session_factory
 from cortex.models_client import ModelUnavailableError, get_model_client
 from cortex.routes.benchmarks import router as benchmarks_router
 from cortex.routes.executions import router as executions_router
+from cortex.routes.graph import router as graph_router
+from cortex.routes.impact import router as impact_router
 from cortex.routes.jobs import router as jobs_router
 from cortex.routes.sources import router as sources_router
 
@@ -24,6 +26,8 @@ log = logging.getLogger("cortex.api")
 
 app = FastAPI(title="CortexOS Runtime", version=__version__)
 app.include_router(sources_router)
+app.include_router(graph_router)
+app.include_router(impact_router)
 app.include_router(executions_router)
 app.include_router(benchmarks_router)
 app.include_router(jobs_router)

@@ -35,13 +35,59 @@ PROMPT_TEMPLATE = """\
 You are answering a question about a software repository. The context below
 was compiled to contain only the information needed. Use only this context.
 If the context does not contain the answer, say so.
-
+{instruction}
 CONTEXT:
 {context}
 
 QUESTION: {query}
 
 ANSWER:"""
+
+# Intent-aware task instructions. "explain" is the empty default so the
+# assembled prompt (and therefore the benchmark) is byte-identical to before;
+# "debug" and "generate" ask the model for the structured output the product
+# needs. Detection is deterministic keyword matching — no extra model call.
+import re as _re
+
+# Note: "breaks" is intentionally excluded — "what breaks if X changes" is a
+# change-impact question, not a bug report, and must stay on the explain path.
+_DEBUG_MARKERS = _re.compile(
+    r"\b(fix|bug|broken|error|errors|fails?|failing|failed|crash(?:es|ing)?|"
+    r"traceback|exception|regress(?:ion)?|incorrect|not working|doesn'?t work)\b",
+    _re.IGNORECASE,
+)
+_GENERATE_MARKERS = _re.compile(
+    r"\b(generate|write|implement|create|add|build|refactor|rewrite|scaffold)\b",
+    _re.IGNORECASE,
+)
+
+_INSTRUCTIONS = {
+    "explain": "",
+    "debug": (
+        "\nThe user is reporting a bug. Respond with these sections, each on its "
+        "own line, using only the context:\n"
+        "Diagnosis: what is going wrong.\n"
+        "Root cause: the underlying reason, citing the responsible code.\n"
+        "Evidence: the specific files/functions in the context that show it.\n"
+        "Patch: a fenced code block with the corrected code.\n"
+        "Explanation: why the patch fixes it.\n"
+        "Affected files: the files that must change.\n"
+    ),
+    "generate": (
+        "\nThe user is requesting code. Produce the actual code in a fenced code "
+        "block first, grounded in the context's conventions, then a short "
+        "explanation. Prefer complete, runnable code over description.\n"
+    ),
+}
+
+
+def detect_intent(query: str) -> str:
+    """Deterministically classify the query's intent: debug | generate | explain."""
+    if _DEBUG_MARKERS.search(query):
+        return "debug"
+    if _GENERATE_MARKERS.search(query):
+        return "generate"
+    return "explain"
 
 # Session mode: the context block is a stable, append-only prefix so the
 # model runtime's KV cache reuses previously processed pages across turns.
@@ -75,11 +121,15 @@ async def run_cortex_execution(
     # decomposition. The router is deterministic: no LLM call decides
     # whether to call an LLM, and every choice is recorded for the metrics.
     profile = profile_task(query)
+    intent = detect_intent(query)
+    instruction = _INSTRUCTIONS[intent]
     budget = InferenceBudgetController(profile)
     fast_path = budget.fast_path
     path = budget.path
     budget.decide_requirement_generation()
-    await emitter.emit(EventType.TASK_PROFILED, {**profile.as_dict(), "path": path})
+    await emitter.emit(
+        EventType.TASK_PROFILED, {**profile.as_dict(), "path": path, "intent": intent}
+    )
 
     generation_calls = 0
     embedding_calls = 0
@@ -209,7 +259,9 @@ async def run_cortex_execution(
             )
             prompt = f"{SESSION_PROMPT_PREFIX}{memory_block}\n\nQUESTION: {query}\n\nANSWER:"
         else:
-            prompt = PROMPT_TEMPLATE.format(context=context.render(), query=query)
+            prompt = PROMPT_TEMPLATE.format(
+                context=context.render(), query=query, instruction=instruction
+            )
         await emitter.emit(
             EventType.MODEL_SELECTED,
             {"model": settings.task_model, "reason": "single-model MVP"},
@@ -276,6 +328,7 @@ async def run_cortex_execution(
             # invocations actually went, and why each optional operation
             # ran or was skipped
             "path": path,
+            "intent": intent,
             "requirements_ms": requirements_ms,
             "compile_ms": compile_ms,
             "generation_calls": generation_calls,

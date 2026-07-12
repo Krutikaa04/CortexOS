@@ -175,6 +175,39 @@ def test_structural_questions_stay_deep():
     assert profile.task_type in ("structural", "multi_hop")
 
 
+# ------------------------------------------------------------------ intent
+
+
+def test_detect_intent_classifies_debug_generate_explain():
+    from cortex.kernel.pipeline import detect_intent
+
+    assert detect_intent("Fix the crash in Signer.unsign") == "debug"
+    assert detect_intent("This function fails on empty input") == "debug"
+    assert detect_intent("Generate a helper that signs a payload") == "generate"
+    assert detect_intent("Implement a retry wrapper for the client") == "generate"
+    assert detect_intent("What does the Signer class do?") == "explain"
+    # change-impact questions must NOT be treated as bug reports
+    assert detect_intent("What breaks if the Serializer signature changes?") == "explain"
+
+
+def test_explain_prompt_is_unchanged_by_intent_slot():
+    """The default (explain) prompt must be byte-identical to the old template
+    so benchmark comparisons stay valid."""
+    from cortex.kernel.pipeline import PROMPT_TEMPLATE
+
+    prompt = PROMPT_TEMPLATE.format(context="CTX", query="Q", instruction="")
+    assert "say so.\n\nCONTEXT:\nCTX\n\nQUESTION: Q\n\nANSWER:" in prompt
+
+
+def test_debug_instruction_injects_sections():
+    from cortex.kernel.pipeline import _INSTRUCTIONS, PROMPT_TEMPLATE
+
+    prompt = PROMPT_TEMPLATE.format(
+        context="CTX", query="fix it", instruction=_INSTRUCTIONS["debug"]
+    )
+    assert "Root cause:" in prompt and "Patch:" in prompt
+
+
 # -------------------------------------------------- inference budget controller
 
 
