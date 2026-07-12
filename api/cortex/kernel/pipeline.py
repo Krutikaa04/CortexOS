@@ -16,6 +16,7 @@ from typing import Any
 
 from cortex.config import get_settings
 from cortex.events import EventEmitter, EventType
+from cortex.kernel.budget import InferenceBudgetController
 from cortex.kernel.compiler import compile_context
 from cortex.kernel.profiler import profile_task
 from cortex.kernel.requirements import generate_requirements
@@ -67,25 +68,17 @@ async def run_cortex_execution(
     await emitter.emit(EventType.TASK_RECEIVED, {"query": query, "mode": "cortex"})
 
     # --- 1. profile + deterministic path routing ---
-    # FAST: simple factual questions skip the requirement-decomposition LLM
-    # call (measured 11-43s per question on local CPU) — heuristic
-    # requirements retrieve just as well for single-fact lookups.
-    # DEEP: structural and multi-hop questions keep full decomposition.
-    # The router is deterministic: no LLM call decides whether to call an LLM.
+    # The Inference Budget Controller owns every "should this expensive
+    # operation happen?" decision. FAST: simple factual questions skip the
+    # requirement-decomposition LLM call (measured 11-43s per question on
+    # local CPU). DEEP: structural and multi-hop questions keep full
+    # decomposition. The router is deterministic: no LLM call decides
+    # whether to call an LLM, and every choice is recorded for the metrics.
     profile = profile_task(query)
-    fast_path = profile.task_type == "factual"
-    path = "fast" if fast_path else "deep"
-    decisions: list[dict[str, str]] = [
-        {
-            "operation": "requirement_generation",
-            "decision": "SKIP" if fast_path else "EXECUTE",
-            "reason": (
-                "fast path: factual question, heuristic requirements suffice"
-                if fast_path
-                else f"{profile.task_type} question needs model decomposition"
-            ),
-        }
-    ]
+    budget = InferenceBudgetController(profile)
+    fast_path = budget.fast_path
+    path = budget.path
+    budget.decide_requirement_generation()
     await emitter.emit(EventType.TASK_PROFILED, {**profile.as_dict(), "path": path})
 
     generation_calls = 0
@@ -243,26 +236,14 @@ async def run_cortex_execution(
             answer, requirements, context, extra_covered=resident_covered
         )
         await emitter.emit(EventType.SUFFICIENCY_CHECKED, sufficiency.as_dict())
-        if sufficiency.sufficient or round_no == MAX_ROUNDS:
-            decisions.append(
-                {
-                    "operation": "context_expansion",
-                    "decision": "SKIP",
-                    "reason": (
-                        "deterministic sufficiency passed"
-                        if sufficiency.sufficient
-                        else "round limit reached"
-                    ),
-                }
-            )
-            break
-        decisions.append(
-            {
-                "operation": "context_expansion",
-                "decision": "ESCALATE",
-                "reason": "; ".join(sufficiency.reasons),
-            }
+        expansion = budget.decide_expansion(
+            sufficient=sufficiency.sufficient,
+            round_no=round_no,
+            max_rounds=MAX_ROUNDS,
+            reasons=sufficiency.reasons,
         )
+        if expansion.decision == "SKIP":
+            break
 
         # --- expand and retry ---
         profile.context_budget_tokens = int(
@@ -299,7 +280,7 @@ async def run_cortex_execution(
             "compile_ms": compile_ms,
             "generation_calls": generation_calls,
             "embedding_calls": embedding_calls,
-            "decisions": decisions,
+            "decisions": [d.as_dict() for d in budget.decisions],
         }
     )
     if session_id is not None:

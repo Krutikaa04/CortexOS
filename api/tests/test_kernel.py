@@ -173,3 +173,46 @@ def test_deep_path_for_change_impact_questions():
 def test_structural_questions_stay_deep():
     profile = profile_task("Which components import the auth service?")
     assert profile.task_type in ("structural", "multi_hop")
+
+
+# -------------------------------------------------- inference budget controller
+
+
+def test_budget_fast_path_skips_requirement_generation():
+    from cortex.kernel.budget import InferenceBudgetController
+
+    ctl = InferenceBudgetController(profile_task("What is the token TTL?"))
+    assert ctl.fast_path and ctl.path == "fast"
+    d = ctl.decide_requirement_generation()
+    assert d.decision == "SKIP" and d.operation == "requirement_generation"
+    assert ctl.decisions == [d]  # every decision is recorded exactly once
+
+
+def test_budget_deep_path_executes_requirement_generation():
+    from cortex.kernel.budget import InferenceBudgetController
+
+    ctl = InferenceBudgetController(
+        profile_task("What breaks if AuthService.verify changes?")
+    )
+    assert not ctl.fast_path and ctl.path == "deep"
+    assert ctl.decide_requirement_generation().decision == "EXECUTE"
+
+
+def test_budget_expansion_gate():
+    from cortex.kernel.budget import InferenceBudgetController
+
+    ctl = InferenceBudgetController(profile_task("What is X?"))
+    # sufficient -> stop, no wasted round
+    assert ctl.decide_expansion(
+        sufficient=True, round_no=1, max_rounds=2, reasons=[]
+    ).decision == "SKIP"
+    # insufficient with rounds left -> spend another round
+    esc = ctl.decide_expansion(
+        sufficient=False, round_no=1, max_rounds=2, reasons=["low_coverage"]
+    )
+    assert esc.decision == "ESCALATE" and "low_coverage" in esc.reason
+    # insufficient but out of rounds -> stop rather than loop forever
+    assert ctl.decide_expansion(
+        sufficient=False, round_no=2, max_rounds=2, reasons=["still_thin"]
+    ).decision == "SKIP"
+    assert len(ctl.decisions) == 3

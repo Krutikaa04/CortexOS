@@ -1,5 +1,5 @@
-// Runtime API client. In demo mode (Vercel, no runtime connected) the
-// pages fall back to recorded traces — see lib/eventStream.ts.
+// Runtime API client. Every call targets a live CortexOS runtime; there is
+// no offline/demo fallback — all data comes from real executions.
 
 import type {
   BenchmarkRun,
@@ -13,9 +13,6 @@ import type {
 
 export const API_URL =
   process.env.NEXT_PUBLIC_CORTEX_API_URL ?? "http://localhost:8000";
-
-// export const DEMO_MODE = process.env.NEXT_PUBLIC_DEMO_MODE === "1";
-export const DEMO_MODE = process.env.NEXT_PUBLIC_DEMO_MODE === "0";
 
 async function get<T>(path: string): Promise<T> {
   const res = await fetch(`${API_URL}${path}`, { cache: "no-store" });

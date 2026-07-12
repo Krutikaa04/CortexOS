@@ -48,8 +48,8 @@ pipeline. Every execution's metrics record the path, per-stage timings,
 model-call counts, and each skip/execute/escalate decision with its reason.
 
 Everything runs locally through Docker Compose at zero mandatory cost.
-The Studio frontend additionally deploys to Vercel as a public demo that
-replays *real* recorded execution traces.
+Studio always talks to a live runtime and every number it shows comes from
+a real execution — there is no replay, demo, or prerecorded-trace mode.
 
 ## Quick start
 
@@ -86,12 +86,10 @@ The Studio (`studio/`, Next.js) is the visual control plane:
 - **Context X-Ray** — per-execution: requirements, included artifacts with
   representation levels, rejected artifacts *with reasons*, token savings
 - **Benchmark Lab** — paired baseline-vs-cortex suites with honest metrics
-- **Replay Demo** — recorded real traces replayed through the same
-  components (this is what the public Vercel deployment shows)
 
 Local dev: `npm install && npm run dev` in `studio/` (or use the dev
-compose profile). Vercel deployment uses `NEXT_PUBLIC_DEMO_MODE=1` and
-bundles exported traces in `studio/public/traces/`.
+compose profile). Studio requires a reachable runtime API
+(`NEXT_PUBLIC_CORTEX_API_URL`); it has no offline demo fallback.
 
 ## Benchmarking
 

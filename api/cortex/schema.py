@@ -220,7 +220,7 @@ class Execution(Base):
 
 
 class ExecutionEvent(Base):
-    """Append-only typed event stream — powers Studio, traces, benchmarks."""
+    """Append-only typed event stream — powers Studio and benchmarks."""
 
     __tablename__ = "execution_event"
     __table_args__ = (UniqueConstraint("execution_id", "seq"),)

@@ -1,7 +1,7 @@
 "use client";
 
-// Live/replayed execution event feed — the runtime's decisions as they
-// happen. Consumes the shared ExecutionEventStream contract.
+// Live execution event feed — the runtime's decisions as they happen.
+// Consumes the shared ExecutionEventStream contract.
 
 import { useEffect, useRef } from "react";
 import type { ExecutionEvent } from "@/lib/types";

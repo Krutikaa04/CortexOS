@@ -1,9 +1,9 @@
 """Typed execution event stream.
 
 Every important runtime decision is emitted as an append-only event row.
-This single stream powers Studio's live view (SSE), recorded trace replay,
-and benchmark analysis. Events are facts about what the runtime actually
-did — never fabricated, never retroactively edited.
+This single stream powers Studio's live view (SSE) and benchmark analysis.
+Events are facts about what the runtime actually did on a real execution —
+never fabricated, never retroactively edited.
 """
 
 import uuid

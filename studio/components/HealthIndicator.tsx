@@ -1,15 +1,14 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { api, DEMO_MODE } from "@/lib/api";
+import { api } from "@/lib/api";
 
-type State = "ok" | "degraded" | "offline" | "demo";
+type State = "ok" | "degraded" | "offline";
 
 export function HealthIndicator() {
-  const [state, setState] = useState<State>(DEMO_MODE ? "demo" : "offline");
+  const [state, setState] = useState<State>("offline");
 
   useEffect(() => {
-    if (DEMO_MODE) return;
     let active = true;
     const check = async () => {
       try {
@@ -31,7 +30,6 @@ export function HealthIndicator() {
     ok: { dot: "bg-signal-green", label: "RUNTIME LIVE", text: "text-signal-green" },
     degraded: { dot: "bg-signal-amber", label: "DEGRADED", text: "text-signal-amber" },
     offline: { dot: "bg-signal-red", label: "RUNTIME OFFLINE", text: "text-signal-red" },
-    demo: { dot: "bg-signal-violet", label: "REPLAY DEMO", text: "text-signal-violet" },
   };
   const s = styles[state];
 

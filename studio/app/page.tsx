@@ -64,8 +64,8 @@ export default function CommandCenter() {
           Runtime not reachable. Start it with{" "}
           <code className="rounded bg-ink-800 px-1.5 py-0.5 font-mono text-xs">
             docker compose up
-          </code>{" "}
-          — or explore the replay demo pages.
+          </code>
+          .
         </div>
       )}
 

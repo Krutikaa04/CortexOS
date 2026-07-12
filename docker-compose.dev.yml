@@ -14,19 +14,16 @@ services:
     volumes:
       - ./api:/app
       - cortex-ingest:/data/ingest
-      - cortex-traces:/data/traces
 
   cortex-worker:
     volumes:
       - ./api:/app
       - cortex-ingest:/data/ingest
-      - cortex-traces:/data/traces
 
   cortex-worker-benchmark:
     volumes:
       - ./api:/app
       - cortex-ingest:/data/ingest
-      - cortex-traces:/data/traces
 
   cortex-studio:
     image: node:22-slim

@@ -33,7 +33,6 @@ class Settings(BaseSettings):
     internal_model: str = ""
 
     ingest_dir: str = "/data/ingest"
-    traces_dir: str = "/data/traces"
 
     @property
     def required_models(self) -> list[str]:

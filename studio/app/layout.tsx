@@ -14,7 +14,6 @@ const NAV = [
   { href: "/playground", label: "Playground" },
   { href: "/executions", label: "Executions" },
   { href: "/benchmarks", label: "Benchmarks" },
-  { href: "/demo", label: "Replay Demo" },
 ];
 
 export default function RootLayout({

@@ -50,7 +50,6 @@ services:
       - "8000:8000"
     volumes:
       - cortex-ingest:/data/ingest
-      - cortex-traces:/data/traces
     networks: [cortex-internal, cortex-public]
     depends_on:
       cortex-migrate:
@@ -73,7 +72,6 @@ services:
       CORTEX_WORKER_KINDS: "ingest_source"
     volumes:
       - cortex-ingest:/data/ingest
-      - cortex-traces:/data/traces
     networks: [cortex-internal]
     depends_on:
       cortex-migrate:
@@ -91,7 +89,6 @@ services:
       CORTEX_WORKER_KINDS: "run_benchmark"
     volumes:
       - cortex-ingest:/data/ingest
-      - cortex-traces:/data/traces
     networks: [cortex-internal]
     depends_on:
       cortex-migrate:
@@ -103,7 +100,6 @@ volumes:
   cortex-pgdata:
   cortex-models:
   cortex-ingest:
-  cortex-traces:
 
 networks:
   cortex-internal:

@@ -1,14 +1,12 @@
-// Shared execution-event stream contract (a locked architecture rule):
-// the same visualization components consume either a live SSE stream from
-// a running CortexOS runtime or a recorded trace exported from a real
-// execution. Recorded traces are REAL executions replayed with timing —
-// never fabricated.
+// Execution-event stream contract: the visualization components consume a
+// live SSE stream from a running CortexOS runtime. Every event is a fact
+// about a real execution as it happens — never fabricated, never replayed.
 
 import { API_URL } from "./api";
 import type { ExecutionEvent } from "./types";
 
 export interface ExecutionEventStream {
-  readonly kind: "live" | "recorded";
+  readonly kind: "live";
   subscribe(
     onEvent: (event: ExecutionEvent) => void,
     onDone: (status: string) => void,
@@ -50,51 +48,6 @@ export class LiveExecutionEventStream implements ExecutionEventStream {
       onError?.(new Error("event stream disconnected"));
     };
     return () => source.close();
-  }
-}
-
-export class RecordedExecutionEventStream implements ExecutionEventStream {
-  readonly kind = "recorded";
-
-  // speed: replay time compression (recorded gaps divided by this factor)
-  constructor(
-    private events: ExecutionEvent[],
-    private finalStatus: string = "succeeded",
-    private speed: number = 8,
-  ) {}
-
-  subscribe(
-    onEvent: (event: ExecutionEvent) => void,
-    onDone: (status: string) => void,
-  ): () => void {
-    let cancelled = false;
-    const timers: ReturnType<typeof setTimeout>[] = [];
-
-    const t0 = this.events.length
-      ? new Date(this.events[0].ts).getTime()
-      : Date.now();
-    let last = 0;
-    for (const event of this.events) {
-      const gap = Math.min(
-        (new Date(event.ts).getTime() - t0) / this.speed,
-        last + 1500, // cap long silences so replays stay watchable
-      );
-      last = gap;
-      timers.push(
-        setTimeout(() => {
-          if (!cancelled) onEvent(event);
-        }, gap),
-      );
-    }
-    timers.push(
-      setTimeout(() => {
-        if (!cancelled) onDone(this.finalStatus);
-      }, last + 200),
-    );
-    return () => {
-      cancelled = true;
-      timers.forEach(clearTimeout);
-    };
   }
 }
 
