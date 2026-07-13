@@ -174,9 +174,18 @@ export interface ImpactReport {
   evidence_grounded: boolean;
 }
 
+export interface DependencyNode {
+  id: string;
+  qualified_name: string;
+  symbol: string;
+  kind: string;
+  path: string;
+  edge_kind: string;
+}
+
 export interface Neighbors {
-  depends_on: ImpactArtifact[];
-  dependents: ImpactArtifact[];
+  depends_on: DependencyNode[];
+  dependents: DependencyNode[];
 }
 
 export interface ArtifactRef {

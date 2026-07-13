@@ -244,12 +244,13 @@ async def get_neighbors(
         rows = (
             await session.execute(
                 text(
-                    "SELECT a.id, a.qualified_name, a.kind, sf.path, e.kind AS edge_kind "
+                    "SELECT DISTINCT a.id, a.qualified_name, a.kind, sf.path, e.kind AS edge_kind "
                     "FROM artifact_edge e "
                     f"JOIN semantic_artifact a ON a.id = {join_on} "
                     "JOIN source_file sf ON sf.id = a.source_file_id "
                     f"WHERE e.source_version_id = :vid AND {where} = :aid "
-                    "AND e.kind <> 'contains'"
+                    "AND e.kind <> 'contains' AND a.id <> :aid "
+                    "ORDER BY a.qualified_name"
                 ),
                 {"vid": version_id, "aid": artifact_id},
             )

@@ -40,7 +40,11 @@ export default function ImpactGuardPage() {
   const [drawer, setDrawer] = useState<ArtifactTarget | null>(null);
   const phaseTimer = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  useEffect(() => () => phaseTimer.current && clearInterval(phaseTimer.current), []);
+  useEffect(() => {
+    return () => {
+      if (phaseTimer.current) clearInterval(phaseTimer.current);
+    };
+  }, []);
 
   const analyze = async () => {
     if (!versionId || !diff.trim() || running) return;
