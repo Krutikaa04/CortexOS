@@ -3,8 +3,9 @@
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { api } from "@/lib/api";
+import { LiveExecutionEventStream } from "@/lib/eventStream";
 import { useRepo } from "@/lib/repo-context";
-import type { ImpactReport as Report } from "@/lib/types";
+import type { ExecutionEvent, ImpactReport as Report } from "@/lib/types";
 import { ImpactReport } from "@/components/ImpactReport";
 import { ArtifactDrawer, type ArtifactTarget } from "@/components/ArtifactDrawer";
 import { IconCheck, IconSpinner } from "@/components/icons";
@@ -22,12 +23,14 @@ const EXAMPLE_DIFF = `diff --git a/src/itsdangerous/signer.py b/src/itsdangerous
              raise BadSignature("no sep")
 `;
 
-const PHASES = [
-  "Parsing the diff",
-  "Resolving changed artifacts",
-  "Tracing blast radius through the graph",
-  "Compiling minimum evidence",
-  "Assessing risk & writing review",
+// Each phase is marked done when its event arrives on the live feed — real
+// progress, not a timer. The final phase spans the one narrative model call.
+const PHASES: { label: string; doneOn: string }[] = [
+  { label: "Parsing the diff", doneOn: "IMPACT_DIFF_PARSED" },
+  { label: "Resolving changed artifacts", doneOn: "IMPACT_ARTIFACTS_RESOLVED" },
+  { label: "Tracing blast radius through the graph", doneOn: "IMPACT_BLAST_RADIUS" },
+  { label: "Compiling minimum evidence", doneOn: "IMPACT_EVIDENCE_COMPILED" },
+  { label: "Assessing risk & writing review", doneOn: "IMPACT_COMPLETED" },
 ];
 
 export default function ImpactGuardPage() {
@@ -35,39 +38,49 @@ export default function ImpactGuardPage() {
   const [diff, setDiff] = useState("");
   const [report, setReport] = useState<Report | null>(null);
   const [running, setRunning] = useState(false);
-  const [phase, setPhase] = useState(0);
+  const [events, setEvents] = useState<ExecutionEvent[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [drawer, setDrawer] = useState<ArtifactTarget | null>(null);
-  const phaseTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  const unsubRef = useRef<(() => void) | null>(null);
 
-  useEffect(() => {
-    return () => {
-      if (phaseTimer.current) clearInterval(phaseTimer.current);
-    };
-  }, []);
+  useEffect(() => () => unsubRef.current?.(), []);
 
   const analyze = async () => {
     if (!versionId || !diff.trim() || running) return;
     setRunning(true);
     setError(null);
     setReport(null);
-    setPhase(0);
-    // structural phases finish fast; the last (model) phase dominates — advance
-    // through the early ones, then hold on the final phase until the response.
-    phaseTimer.current = setInterval(
-      () => setPhase((p) => Math.min(p + 1, PHASES.length - 1)),
-      1400,
-    );
+    setEvents([]);
+    unsubRef.current?.();
     try {
-      const r = await api.impact(versionId, diff);
-      setReport(r);
+      const { execution_id } = await api.startImpact(versionId, diff);
+      const stream = new LiveExecutionEventStream(execution_id);
+      unsubRef.current = stream.subscribe(
+        (event) => setEvents((prev) => [...prev, event]),
+        async (status) => {
+          if (status === "failed") {
+            const ex = await api.execution(execution_id).catch(() => null);
+            setError(ex?.failure_reason ?? "impact analysis failed");
+          } else {
+            const ex = await api.execution(execution_id);
+            setReport(ex.metrics as unknown as Report);
+          }
+          setRunning(false);
+        },
+        (err) => {
+          setError(err.message);
+          setRunning(false);
+        },
+      );
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      if (phaseTimer.current) clearInterval(phaseTimer.current);
       setRunning(false);
     }
   };
+
+  const doneCount = PHASES.filter((p) =>
+    events.some((e) => e.event_type === p.doneOn),
+  ).length;
 
   if (!loading && (!selected || !isReady))
     return (
@@ -133,20 +146,20 @@ export default function ImpactGuardPage() {
         {running && (
           <div className="panel mt-4 p-4">
             <ul className="space-y-2.5">
-              {PHASES.map((label, i) => (
-                <li key={label} className="flex items-center gap-3 text-sm">
+              {PHASES.map((phase, i) => (
+                <li key={phase.label} className="flex items-center gap-3 text-sm">
                   <span className="flex h-5 w-5 items-center justify-center">
-                    {i < phase ? (
+                    {i < doneCount ? (
                       <IconCheck className="text-signal-green" />
-                    ) : i === phase ? (
+                    ) : i === doneCount ? (
                       <IconSpinner className="text-signal-blue" />
                     ) : (
                       <span className="h-1.5 w-1.5 rounded-full bg-ink-700" />
                     )}
                   </span>
-                  <span className={i <= phase ? "text-ink-200" : "text-ink-600"}>
-                    {label}
-                    {i === phase ? "…" : ""}
+                  <span className={i <= doneCount ? "text-ink-200" : "text-ink-600"}>
+                    {phase.label}
+                    {i === doneCount ? "…" : ""}
                   </span>
                 </li>
               ))}

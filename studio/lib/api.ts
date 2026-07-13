@@ -10,7 +10,6 @@ import type {
   Execution,
   ExecutionEvent,
   HealthStatus,
-  ImpactReport,
   JobInfo,
   Neighbors,
   RepoGraph,
@@ -77,7 +76,9 @@ export const api = {
   neighbors: (versionId: string, artifactId: string) =>
     get<Neighbors>(`/v1/sources/${versionId}/artifacts/${artifactId}/neighbors`),
 
-  // Change Impact Guard — analyze a diff against the repository graph.
-  impact: (versionId: string, diff: string) =>
-    post<ImpactReport>(`/v1/sources/${versionId}/impact`, { diff }),
+  // Change Impact Guard — kicks off a background analysis (mode='impact')
+  // whose phases stream over the execution event feed; the finished report is
+  // read back from the execution's metrics.
+  startImpact: (versionId: string, diff: string) =>
+    post<{ execution_id: string }>(`/v1/sources/${versionId}/impact`, { diff }),
 };

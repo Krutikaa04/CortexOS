@@ -262,20 +262,35 @@ def _split_items(blob: str) -> list[str]:
 
 
 async def run_impact_analysis(
-    session: AsyncSession, version_id: uuid.UUID, diff: str
+    session: AsyncSession, version_id: uuid.UUID, diff: str, emitter=None
 ) -> dict:
-    """Full Change Impact Guard analysis for one diff. Synchronous: one model
-    call at the end; everything before it is deterministic graph work."""
+    """Full Change Impact Guard analysis for one diff. The structural phases
+    are deterministic graph work; only the final narrative costs one model
+    call. When an ``emitter`` is given, each phase is streamed as an event so
+    Studio can show real progress instead of a heuristic timer."""
+
+    async def _emit(event_type: str, payload: dict) -> None:
+        if emitter is not None:
+            await emitter.emit(event_type, payload)
+
     t0 = time.monotonic()
+    await _emit("IMPACT_STARTED", {})
     changes = parse_unified_diff(diff)
     code_files = [c for c in changes if not c.is_delete]
+    await _emit("IMPACT_DIFF_PARSED", {"files": [c.path for c in changes], "count": len(changes)})
 
     changed_arts, resolved_paths = await _resolve_changed_artifacts(session, version_id, code_files)
     seed_ids = [a["id"] for a in changed_arts]
+    await _emit(
+        "IMPACT_ARTIFACTS_RESOLVED",
+        {"changed": [a["qualified_name"].split("::")[-1] for a in changed_arts],
+         "count": len(changed_arts)},
+    )
 
     by_hop = await _blast_radius(session, version_id, seed_ids) if seed_ids else {}
     direct = by_hop.get(1, [])
     indirect = by_hop.get(2, [])
+    await _emit("IMPACT_BLAST_RADIUS", {"direct": len(direct), "indirect": len(indirect)})
 
     # sensitivity over every real path/name in play
     sens_texts = [a["path"] + " " + a["qualified_name"] for a in changed_arts + direct + indirect]
@@ -284,6 +299,7 @@ async def run_impact_analysis(
     )
     has_inherit = any(d.get("edge_kind") == "inherits" for d in direct)
     level, reasons = score_risk(len(direct), len(indirect), sensitivity, has_inherit)
+    await _emit("IMPACT_RISK_SCORED", {"risk_level": level, "sensitivity": sensitivity})
 
     # --- reuse the Context Compiler on changed + impacted artifacts ---
     candidates = [_artifact_to_candidate(a, True) for a in changed_arts]
@@ -291,6 +307,12 @@ async def run_impact_analysis(
     profile = profile_task("change impact analysis")
     profile.context_budget_tokens = 2600
     compiled = compile_context(candidates, profile) if candidates else None
+    if compiled:
+        await _emit(
+            "IMPACT_EVIDENCE_COMPILED",
+            {"candidate_tokens": compiled.candidate_tokens,
+             "context_tokens_sent": compiled.total_tokens},
+        )
 
     changed_block = _render(compiled, "changed") if compiled else "(no changed code resolved in the graph)"
     impacted_block = _render(compiled, "impacted") if compiled else "(no dependents found)"
@@ -308,6 +330,7 @@ async def run_impact_analysis(
     patch = ""
     summary = ""
     if compiled and compiled.included:
+        await _emit("IMPACT_NARRATIVE", {"status": "generating"})
         try:
             result = await get_model_client().generate(
                 _PROMPT.format(changed=changed_block, impacted=impacted_block),
@@ -356,6 +379,8 @@ async def run_impact_analysis(
                 "hop": hop,
             })
         return out
+
+    await _emit("IMPACT_COMPLETED", {"risk_level": level, "confidence": confidence})
 
     return {
         "risk_level": level,
