@@ -62,3 +62,31 @@ def test_score_risk_inherit_signal():
     level, reasons = score_risk(3, 0, [], True)
     assert level == "HIGH"
     assert any("inherit" in r for r in reasons)
+
+
+import pytest
+
+from cortex.routes.impact import _PR_URL, _fetch_github_pr_diff
+
+
+@pytest.mark.parametrize(
+    "url,owner,repo,number",
+    [
+        ("https://github.com/pallets/flask/pull/5432", "pallets", "flask", "5432"),
+        ("https://github.com/pallets/flask/pull/5432/files", "pallets", "flask", "5432"),
+        ("github.com/a-b/c.d/pull/1", "a-b", "c.d", "1"),
+    ],
+)
+def test_pr_url_parse(url, owner, repo, number):
+    m = _PR_URL.search(url)
+    assert m is not None
+    assert (m["owner"], m["repo"], m["number"]) == (owner, repo, number)
+
+
+@pytest.mark.parametrize(
+    "url",
+    ["not a url", "https://github.com/owner/repo", "https://gitlab.com/o/r/pull/1"],
+)
+def test_fetch_github_pr_diff_rejects_non_pr_url(url):
+    with pytest.raises(ValueError):
+        _fetch_github_pr_diff(url)

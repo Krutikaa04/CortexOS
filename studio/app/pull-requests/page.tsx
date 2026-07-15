@@ -33,9 +33,13 @@ const PHASES: { label: string; doneOn: string }[] = [
   { label: "Assessing risk & writing review", doneOn: "IMPACT_COMPLETED" },
 ];
 
+type Mode = "diff" | "github";
+
 export default function ImpactGuardPage() {
   const { versionId, selected, isReady, loading } = useRepo();
+  const [mode, setMode] = useState<Mode>("diff");
   const [diff, setDiff] = useState("");
+  const [prUrl, setPrUrl] = useState("");
   const [report, setReport] = useState<Report | null>(null);
   const [running, setRunning] = useState(false);
   const [events, setEvents] = useState<ExecutionEvent[]>([]);
@@ -45,33 +49,42 @@ export default function ImpactGuardPage() {
 
   useEffect(() => () => unsubRef.current?.(), []);
 
+  // Both input modes feed the same background analysis + live event stream.
+  const track = (execution_id: string) => {
+    const stream = new LiveExecutionEventStream(execution_id);
+    unsubRef.current = stream.subscribe(
+      (event) => setEvents((prev) => [...prev, event]),
+      async (status) => {
+        if (status === "failed") {
+          const ex = await api.execution(execution_id).catch(() => null);
+          setError(ex?.failure_reason ?? "impact analysis failed");
+        } else {
+          const ex = await api.execution(execution_id);
+          setReport(ex.metrics as unknown as Report);
+        }
+        setRunning(false);
+      },
+      (err) => {
+        setError(err.message);
+        setRunning(false);
+      },
+    );
+  };
+
   const analyze = async () => {
-    if (!versionId || !diff.trim() || running) return;
+    const ready = mode === "diff" ? diff.trim() : prUrl.trim();
+    if (!versionId || !ready || running) return;
     setRunning(true);
     setError(null);
     setReport(null);
     setEvents([]);
     unsubRef.current?.();
     try {
-      const { execution_id } = await api.startImpact(versionId, diff);
-      const stream = new LiveExecutionEventStream(execution_id);
-      unsubRef.current = stream.subscribe(
-        (event) => setEvents((prev) => [...prev, event]),
-        async (status) => {
-          if (status === "failed") {
-            const ex = await api.execution(execution_id).catch(() => null);
-            setError(ex?.failure_reason ?? "impact analysis failed");
-          } else {
-            const ex = await api.execution(execution_id);
-            setReport(ex.metrics as unknown as Report);
-          }
-          setRunning(false);
-        },
-        (err) => {
-          setError(err.message);
-          setRunning(false);
-        },
-      );
+      const { execution_id } =
+        mode === "diff"
+          ? await api.startImpact(versionId, diff)
+          : await api.startGithubImpact(versionId, prUrl);
+      track(execution_id);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
       setRunning(false);
@@ -112,29 +125,73 @@ export default function ImpactGuardPage() {
           </p>
         </header>
 
+        <div className="mb-3 flex gap-1 rounded-lg border border-ink-800 bg-ink-900/50 p-1 text-xs w-fit">
+          {(["diff", "github"] as Mode[]).map((m) => (
+            <button
+              key={m}
+              onClick={() => setMode(m)}
+              disabled={running}
+              className={`rounded-md px-3 py-1.5 transition-colors ${
+                mode === m
+                  ? "bg-ink-800 text-ink-100"
+                  : "text-ink-400 hover:text-ink-200"
+              }`}
+            >
+              {m === "diff" ? "Paste diff" : "GitHub PR"}
+            </button>
+          ))}
+        </div>
+
         <div className="panel p-3">
-          <textarea
-            value={diff}
-            onChange={(e) => setDiff(e.target.value)}
-            placeholder="Paste a unified diff (git diff / PR patch)…"
-            className="h-44 w-full resize-y rounded-lg bg-transparent px-3 py-2 font-mono text-[12.5px] text-ink-100 outline-none placeholder:text-ink-600"
-          />
-          <div className="flex items-center justify-between border-t border-ink-800 px-1 pt-3">
-            <button
-              onClick={() => setDiff(EXAMPLE_DIFF)}
-              className="text-xs text-ink-400 hover:text-signal-blue"
-            >
-              Load example diff
-            </button>
-            <button
-              onClick={analyze}
-              disabled={running || !diff.trim()}
-              className="btn-primary"
-            >
-              {running ? <IconSpinner /> : null}
-              {running ? "Analyzing…" : "Analyze impact"}
-            </button>
-          </div>
+          {mode === "diff" ? (
+            <>
+              <textarea
+                value={diff}
+                onChange={(e) => setDiff(e.target.value)}
+                placeholder="Paste a unified diff (git diff / PR patch)…"
+                className="h-44 w-full resize-y rounded-lg bg-transparent px-3 py-2 font-mono text-[12.5px] text-ink-100 outline-none placeholder:text-ink-600"
+              />
+              <div className="flex items-center justify-between border-t border-ink-800 px-1 pt-3">
+                <button
+                  onClick={() => setDiff(EXAMPLE_DIFF)}
+                  className="text-xs text-ink-400 hover:text-signal-blue"
+                >
+                  Load example diff
+                </button>
+                <button
+                  onClick={analyze}
+                  disabled={running || !diff.trim()}
+                  className="btn-primary"
+                >
+                  {running ? <IconSpinner /> : null}
+                  {running ? "Analyzing…" : "Analyze impact"}
+                </button>
+              </div>
+            </>
+          ) : (
+            <>
+              <input
+                value={prUrl}
+                onChange={(e) => setPrUrl(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && analyze()}
+                placeholder="https://github.com/owner/repo/pull/123"
+                className="w-full rounded-lg bg-transparent px-3 py-2 font-mono text-[12.5px] text-ink-100 outline-none placeholder:text-ink-600"
+              />
+              <div className="flex items-center justify-between border-t border-ink-800 px-1 pt-3">
+                <span className="text-xs text-ink-500">
+                  Fetches the PR&apos;s diff from GitHub — public repositories only.
+                </span>
+                <button
+                  onClick={analyze}
+                  disabled={running || !prUrl.trim()}
+                  className="btn-primary"
+                >
+                  {running ? <IconSpinner /> : null}
+                  {running ? "Analyzing…" : "Analyze PR"}
+                </button>
+              </div>
+            </>
+          )}
         </div>
 
         {error && (

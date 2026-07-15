@@ -11,6 +11,8 @@ import asyncio
 import json
 import logging
 import re
+import urllib.error
+import urllib.request
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -26,9 +28,57 @@ log = logging.getLogger("cortex.impact")
 
 router = APIRouter(prefix="/v1/sources", tags=["impact"])
 
+# github.com/<owner>/<repo>/pull/<n>  (also tolerates trailing /files, .diff, etc.)
+_PR_URL = re.compile(
+    r"github\.com/(?P<owner>[^/\s]+)/(?P<repo>[^/\s]+)/pull/(?P<number>\d+)", re.I
+)
+_GITHUB_DIFF_MAX_BYTES = 2_000_000  # guard against pathologically large PRs
+
 
 class ImpactRequest(BaseModel):
     diff: str
+
+
+class GitHubImpactRequest(BaseModel):
+    pr_url: str
+
+
+def _fetch_github_pr_diff(pr_url: str) -> str:
+    """Fetch a public GitHub pull request's unified diff (zero-cost, no auth).
+
+    Uses the REST API's ``application/vnd.github.v3.diff`` media type, which
+    returns exactly the diff the Change Impact Guard already parses. Runs in a
+    worker thread (blocking urllib) via ``asyncio.to_thread`` at the call site.
+    """
+    m = _PR_URL.search(pr_url.strip())
+    if not m:
+        raise ValueError(
+            "expected a GitHub pull request URL like "
+            "https://github.com/owner/repo/pull/123"
+        )
+    owner, repo, number = m["owner"], m["repo"].removesuffix(".git"), m["number"]
+    api_url = f"https://api.github.com/repos/{owner}/{repo}/pulls/{number}"
+    req = urllib.request.Request(
+        api_url,
+        headers={
+            "Accept": "application/vnd.github.v3.diff",
+            "User-Agent": "CortexOS-ChangeImpactGuard",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            raw = resp.read(_GITHUB_DIFF_MAX_BYTES + 1)
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            raise ValueError("pull request not found (or the repository is private)")
+        if exc.code in (403, 429):
+            raise ValueError("GitHub rate limit reached — try again shortly")
+        raise ValueError(f"GitHub returned HTTP {exc.code}")
+    except (urllib.error.URLError, TimeoutError) as exc:
+        raise ValueError(f"could not reach GitHub: {exc}")
+    if len(raw) > _GITHUB_DIFF_MAX_BYTES:
+        raise ValueError("pull request diff is too large to analyze")
+    return raw.decode("utf-8", errors="replace")
 
 
 def _label(diff: str) -> str:
@@ -107,4 +157,46 @@ async def analyze_impact(
     await session.commit()
 
     asyncio.create_task(_run_impact(execution_id, version_id, body.diff))
+    return {"execution_id": str(execution_id), "status": "running"}
+
+
+@router.post("/{version_id}/impact/github", status_code=202)
+async def analyze_github_pr(
+    version_id: uuid.UUID,
+    body: GitHubImpactRequest,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Fetch a public GitHub PR's diff and run the same Change Impact Guard.
+
+    This reuses the entire impact pipeline — the only new work is resolving a
+    PR URL to its diff, so a reviewer can point CortexOS at a real pull request
+    instead of pasting a patch by hand.
+    """
+    ready = (
+        await session.execute(
+            text("SELECT 1 FROM source_version WHERE id = :id AND status = 'ready'"),
+            {"id": version_id},
+        )
+    ).first()
+    if ready is None:
+        raise HTTPException(status_code=404, detail="source version not found or not ready")
+
+    try:
+        diff = await asyncio.to_thread(_fetch_github_pr_diff, body.pr_url)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    if not diff.strip():
+        raise HTTPException(status_code=422, detail="pull request has no diff to analyze")
+
+    execution_id = uuid.uuid4()
+    await session.execute(
+        text(
+            "INSERT INTO execution (id, source_version_id, mode, query, status) "
+            "VALUES (:id, :vid, 'impact', :q, 'running')"
+        ),
+        {"id": execution_id, "vid": version_id, "q": _label(diff)},
+    )
+    await session.commit()
+
+    asyncio.create_task(_run_impact(execution_id, version_id, diff))
     return {"execution_id": str(execution_id), "status": "running"}

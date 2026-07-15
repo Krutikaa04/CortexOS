@@ -81,4 +81,9 @@ export const api = {
   // read back from the execution's metrics.
   startImpact: (versionId: string, diff: string) =>
     post<{ execution_id: string }>(`/v1/sources/${versionId}/impact`, { diff }),
+  // Fetch a public GitHub PR's diff server-side and run the same analysis.
+  startGithubImpact: (versionId: string, prUrl: string) =>
+    post<{ execution_id: string }>(`/v1/sources/${versionId}/impact/github`, {
+      pr_url: prUrl,
+    }),
 };
