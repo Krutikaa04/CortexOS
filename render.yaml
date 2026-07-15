@@ -1,0 +1,90 @@
+# CortexOS — Render Blueprint (production cloud runtime).
+#
+# One codebase, configuration-only difference from local Docker. This
+# provisions: a managed Postgres (pgvector), a web service (the API) and a
+# background worker (ingestion + benchmarks), sharing the same image.
+#
+# The model runtime (Ollama) is NOT deployed here — set CORTEX_MODEL_BASE_URL
+# to an Ollama reachable from Render (a tunnelled home machine, a GPU VM, or
+# any provider exposing the Ollama API). See REMAINING MANUAL STEPS.
+
+databases:
+  - name: cortex-db
+    databaseName: cortex
+    user: cortex
+    plan: free # upgrade to 'starter'+ for persistence beyond the free window
+    postgresMajorVersion: "16"
+
+# Shared, non-secret configuration referenced by both services so it is
+# defined once. Secrets and per-deploy values use sync:false on the services.
+envVarGroups:
+  - name: cortex-shared
+    envVars:
+      - key: CORTEX_ENV
+        value: production
+      - key: CORTEX_MODEL_PROVIDER
+        value: ollama
+      - key: CORTEX_TASK_MODEL
+        value: qwen2.5:3b-instruct
+      - key: CORTEX_EMBED_MODEL
+        value: nomic-embed-text
+      - key: CORTEX_EMBED_DIM
+        value: "768"
+      - key: CORTEX_LOG_LEVEL
+        value: INFO
+
+services:
+  # ---- API (web) ----------------------------------------------------------
+  - type: web
+    name: cortex-api
+    runtime: docker
+    dockerfilePath: ./api/Dockerfile
+    dockerContext: ./api
+    plan: starter
+    healthCheckPath: /health/live
+    # Run migrations once per deploy, before traffic shifts to the new version.
+    preDeployCommand: "alembic upgrade head"
+    envVars:
+      - fromGroup: cortex-shared
+      - key: CORTEX_DB_URL
+        fromDatabase:
+          name: cortex-db
+          property: connectionString
+      # The Ollama-compatible endpoint reachable from Render (set in dashboard).
+      - key: CORTEX_MODEL_BASE_URL
+        sync: false
+      # Exact browser origin(s) allowed to call the API, e.g. the Vercel URL.
+      - key: CORTEX_ALLOWED_ORIGINS
+        sync: false
+      # Optional: PAT for cloning private repositories.
+      - key: CORTEX_GIT_TOKEN
+        sync: false
+
+  # ---- Worker (background) ------------------------------------------------
+  - type: worker
+    name: cortex-worker
+    runtime: docker
+    dockerfilePath: ./api/Dockerfile
+    dockerContext: ./api
+    dockerCommand: python -m cortex.worker
+    plan: starter
+    # Persistent disk for the ingestion workspace (git clones). Data itself
+    # lives in Postgres; this only speeds up re-ingest and holds large repos.
+    disk:
+      name: cortex-ingest
+      mountPath: /data
+      sizeGB: 5
+    envVars:
+      - fromGroup: cortex-shared
+      - key: CORTEX_DB_URL
+        fromDatabase:
+          name: cortex-db
+          property: connectionString
+      - key: CORTEX_MODEL_BASE_URL
+        sync: false
+      - key: CORTEX_GIT_TOKEN
+        sync: false
+      - key: CORTEX_WORKER_KINDS
+        value: "ingest_source,run_benchmark"
+      - key: CORTEX_INGEST_DIR
+        value: /data/ingest

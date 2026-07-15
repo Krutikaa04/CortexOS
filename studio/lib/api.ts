@@ -17,8 +17,13 @@ import type {
   SourceSummary,
 } from "./types";
 
-export const API_URL =
-  process.env.NEXT_PUBLIC_CORTEX_API_URL ?? "http://localhost:8000";
+// Runtime base URL is fully configuration-driven. In production (Vercel) set
+// NEXT_PUBLIC_CORTEX_API_URL to the deployed backend; the localhost value is
+// only a local-development fallback. Trailing slashes are trimmed so path
+// concatenation is always correct.
+export const API_URL = (
+  process.env.NEXT_PUBLIC_CORTEX_API_URL ?? "http://localhost:8000"
+).replace(/\/+$/, "");
 
 async function get<T>(path: string): Promise<T> {
   const res = await fetch(`${API_URL}${path}`, { cache: "no-store" });

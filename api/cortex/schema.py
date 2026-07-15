@@ -266,3 +266,18 @@ class Job(Base):
     error: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = _created_at()
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class WorkerHeartbeat(Base):
+    """Liveness beacon each worker upserts every poll.
+
+    The health endpoint reads the freshest row to report whether background
+    processing is actually running — the idle job queue can't reveal that.
+    """
+
+    __tablename__ = "worker_heartbeat"
+
+    worker_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    kinds: Mapped[str] = mapped_column(Text, default="", server_default="", nullable=False)
+    started_at: Mapped[datetime] = _created_at()
+    last_seen: Mapped[datetime] = _created_at()

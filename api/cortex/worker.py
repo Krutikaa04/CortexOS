@@ -52,19 +52,28 @@ def _lane_kinds() -> list[str] | None:
 
 
 async def main() -> None:
-    log.info("worker starting (poll interval %.1fs)", POLL_INTERVAL_SECONDS)
-    while not _shutdown.is_set():
-        try:
-            ran = await claim_and_run_one()
-        except Exception:  # noqa: BLE001 — the loop must survive any job failure
-            log.exception("job execution failed")
-            ran = False
-        if not ran:
+    from cortex.db import dispose_engine
+    from cortex.jobs import heartbeat
+
+    kinds = _lane_kinds()
+    log.info("worker starting (lane=%s, poll interval %.1fs)",
+             ",".join(kinds) if kinds else "*", POLL_INTERVAL_SECONDS)
+    try:
+        while not _shutdown.is_set():
             try:
-                await asyncio.wait_for(_shutdown.wait(), timeout=POLL_INTERVAL_SECONDS)
-            except TimeoutError:
-                pass
-    log.info("worker stopped")
+                await heartbeat(kinds)  # liveness beacon for the health endpoint
+                ran = await claim_and_run_one()
+            except Exception:  # noqa: BLE001 — the loop must survive any failure
+                log.exception("worker iteration failed")
+                ran = False
+            if not ran:
+                try:
+                    await asyncio.wait_for(_shutdown.wait(), timeout=POLL_INTERVAL_SECONDS)
+                except TimeoutError:
+                    pass
+    finally:
+        await dispose_engine()  # graceful shutdown: close the connection pool
+        log.info("worker stopped")
 
 
 def _handle_signal(*_: object) -> None:

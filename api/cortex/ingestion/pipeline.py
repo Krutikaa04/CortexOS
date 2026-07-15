@@ -17,6 +17,7 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from cortex.config import get_settings
 from cortex.db import get_session_factory
 from cortex.ingestion.gitfetch import fetch_repository
 from cortex.ingestion.js_parser import JS_EXTENSIONS, parse_js_file
@@ -125,6 +126,15 @@ async def handle_ingest_source(job_id: uuid.UUID, payload: dict[str, Any]) -> No
         if invalidated:
             log.info("invalidated %d SVM pages from superseded version %s",
                      invalidated, old_version_id)
+
+    # Storage hygiene: on ephemeral/cloud disks the clone is disposable once
+    # everything is persisted in Postgres. Opt-in so local dev keeps the fast
+    # re-ingest path (an existing clone is fetched, not re-cloned).
+    if get_settings().ingest_cleanup:
+        import shutil
+
+        shutil.rmtree(worktree, ignore_errors=True)
+        log.info("cleaned up ingestion workspace %s", worktree)
     log.info("ingestion complete: %s", stats)
 
 
@@ -382,8 +392,6 @@ async def _embed_artifacts(job_id: uuid.UUID, version_id: uuid.UUID, stats: dict
     Reports honest done/total progress and checks for cancellation between
     batches — each batch is a safe boundary (embeddings are upserts).
     """
-    from cortex.config import get_settings
-
     model_name = get_settings().embed_model
     client = get_model_client()
     factory = get_session_factory()

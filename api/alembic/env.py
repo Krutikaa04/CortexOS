@@ -10,7 +10,7 @@ target_metadata = Base.metadata
 
 
 def _db_url() -> str:
-    return get_settings().db_url
+    return get_settings().async_db_url
 
 
 def run_migrations_offline() -> None:
@@ -31,7 +31,7 @@ def _run_sync_migrations(connection) -> None:
 
 
 async def run_migrations_online() -> None:
-    engine = create_async_engine(_db_url())
+    engine = create_async_engine(_db_url(), connect_args=get_settings().db_connect_args)
     async with engine.connect() as connection:
         await connection.run_sync(_run_sync_migrations)
         await connection.commit()

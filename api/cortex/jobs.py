@@ -83,6 +83,21 @@ _SWEEP_ORPHANED_CANCELS_SQL = text(
 )
 
 
+async def heartbeat(kinds: list[str] | None) -> None:
+    """Upsert this worker's liveness beacon (called each poll by the worker)."""
+    lane = ",".join(kinds) if kinds else "*"
+    async with get_session_factory()() as session:
+        await session.execute(
+            text(
+                "INSERT INTO worker_heartbeat (worker_id, kinds, started_at, last_seen) "
+                "VALUES (:wid, :kinds, now(), now()) "
+                "ON CONFLICT (worker_id) DO UPDATE SET last_seen = now(), kinds = EXCLUDED.kinds"
+            ),
+            {"wid": _WORKER_ID, "kinds": lane},
+        )
+        await session.commit()
+
+
 async def enqueue(kind: str, payload: dict[str, Any]) -> uuid.UUID:
     async with get_session_factory()() as session:
         result = await session.execute(

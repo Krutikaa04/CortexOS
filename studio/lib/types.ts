@@ -318,5 +318,6 @@ export interface JobInfo {
 export interface HealthStatus {
   status: "ok" | "degraded" | "unavailable";
   version?: string;
+  ready?: boolean;
   checks: Record<string, string>;
 }
