@@ -36,25 +36,106 @@ const EXAMPLES = [
 const BASELINE_POLL_MS = 4000;
 const BASELINE_TIMEOUT_MS = 10 * 60_000;
 
+// --- Session memory ---------------------------------------------------------
+// A conversation is one SVM session: every question carries a stable
+// session_id so the Kernel keeps working-memory pages resident across turns
+// (KV-cache reuse), and the transcript survives reloads. State is persisted
+// per repository version in localStorage — no new backend system.
+const STORAGE_PREFIX = "cortex:chat:";
+
+interface PersistedSession {
+  sessionId: string;
+  turns: Turn[];
+}
+
+function newSessionId(): string {
+  return typeof crypto !== "undefined" && crypto.randomUUID
+    ? crypto.randomUUID()
+    : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+// Persist a lightweight turn: drop live-only events except the final
+// CONTEXT_COMPILED one (all filesUsed() needs), and never persist a turn that
+// is still running.
+function serializeTurns(turns: Turn[]): Turn[] {
+  return turns
+    .filter((t) => t.status !== "running")
+    .map((t) => ({
+      ...t,
+      events: t.events.filter((e) => e.event_type === "CONTEXT_COMPILED"),
+    }));
+}
+
+function loadSession(versionId: string): PersistedSession {
+  try {
+    const raw = localStorage.getItem(STORAGE_PREFIX + versionId);
+    if (raw) {
+      const parsed = JSON.parse(raw) as PersistedSession;
+      if (parsed.sessionId) return { sessionId: parsed.sessionId, turns: parsed.turns ?? [] };
+    }
+  } catch {
+    /* corrupt / unavailable storage — start fresh */
+  }
+  return { sessionId: newSessionId(), turns: [] };
+}
+
+function saveSession(versionId: string, sessionId: string, turns: Turn[]): void {
+  try {
+    localStorage.setItem(
+      STORAGE_PREFIX + versionId,
+      JSON.stringify({ sessionId, turns: serializeTurns(turns) }),
+    );
+  } catch {
+    /* storage full / unavailable — memory degrades gracefully */
+  }
+}
+
 export default function ChatPage() {
   const { versionId, selected, isReady, loading } = useRepo();
   const [turns, setTurns] = useState<Turn[]>([]);
   const [query, setQuery] = useState("");
   const [activeId, setActiveId] = useState<string | null>(null);
   const [drawer, setDrawer] = useState<ArtifactTarget | null>(null);
+  const [sessionId, setSessionId] = useState<string | null>(null);
 
   const unsubRef = useRef<(() => void) | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const loadedVersionRef = useRef<string | null>(null);
 
   const running = turns.some((t) => t.status === "running");
   const active = turns.find((t) => t.id === activeId) ?? null;
   const showPanel = active?.execution?.status === "succeeded" || active?.status === "running";
+
+  // Restore this repository's conversation + session id when the repo changes.
+  useEffect(() => {
+    if (!versionId || loadedVersionRef.current === versionId) return;
+    loadedVersionRef.current = versionId;
+    const { sessionId: sid, turns: restored } = loadSession(versionId);
+    setSessionId(sid);
+    setTurns(restored);
+    setActiveId(restored.length ? restored[restored.length - 1].id : null);
+  }, [versionId]);
+
+  // Persist after each settled change so the transcript survives reloads.
+  useEffect(() => {
+    if (versionId && sessionId && !running) saveSession(versionId, sessionId, turns);
+  }, [versionId, sessionId, turns, running]);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [turns]);
 
   useEffect(() => () => unsubRef.current?.(), []);
+
+  const newChat = useCallback(() => {
+    if (!versionId || running) return;
+    unsubRef.current?.();
+    const sid = newSessionId();
+    setSessionId(sid);
+    setTurns([]);
+    setActiveId(null);
+    saveSession(versionId, sid, []);
+  }, [versionId, running]);
 
   const patchTurn = useCallback((id: string, patch: Partial<Turn>) => {
     setTurns((prev) => prev.map((t) => (t.id === id ? { ...t, ...patch } : t)));
@@ -70,6 +151,7 @@ export default function ChatPage() {
           query: text,
           mode: "cortex",
           source_version_id: versionId,
+          session_id: sessionId,
         });
         const turn: Turn = {
           id: execution_id,
@@ -122,7 +204,7 @@ export default function ChatPage() {
         ]);
       }
     },
-    [running, versionId, patchTurn],
+    [running, versionId, sessionId, patchTurn],
   );
 
   const runBaseline = useCallback(
@@ -176,6 +258,23 @@ export default function ChatPage() {
   return (
     <div className="flex h-full">
       <div className="flex min-w-0 flex-1 flex-col">
+        {/* session header — only once a conversation exists */}
+        {!empty && (
+          <div className="flex items-center justify-between border-b border-ink-800 bg-ink-950/40 px-6 py-2.5">
+            <span className="flex items-center gap-2 text-xs text-ink-500">
+              <span className="h-1.5 w-1.5 rounded-full bg-signal-green" />
+              Session memory active · {turns.length} turn{turns.length === 1 ? "" : "s"} resident
+            </span>
+            <button
+              onClick={newChat}
+              disabled={running}
+              className="rounded-md border border-ink-700 px-2.5 py-1 text-xs text-ink-300 transition-colors hover:border-ink-500 hover:text-ink-100 disabled:opacity-40"
+            >
+              New chat
+            </button>
+          </div>
+        )}
+
         {/* conversation */}
         <div ref={scrollRef} className="flex-1 overflow-auto">
           <div className="mx-auto w-full max-w-3xl px-6 py-8">

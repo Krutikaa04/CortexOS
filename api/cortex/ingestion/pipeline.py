@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from cortex.db import get_session_factory
 from cortex.ingestion.gitfetch import fetch_repository
+from cortex.ingestion.js_parser import JS_EXTENSIONS, parse_js_file
 from cortex.ingestion.markdown_parser import parse_markdown_file
 from cortex.ingestion.python_parser import ParsedEdge, parse_python_file
 from cortex.jobs import HANDLERS, JobCancelled, checkpoint
@@ -31,7 +32,8 @@ SKIP_DIRS = {
     ".git", "node_modules", ".venv", "venv", "__pycache__", ".next",
     "dist", "build", ".pytest_cache", ".ruff_cache", "vendor", ".idea",
 }
-TEXT_EXTENSIONS = {".py", ".md", ".txt", ".toml", ".cfg", ".ini", ".yaml", ".yml", ".json"}
+TEXT_EXTENSIONS = {".py", ".md", ".txt", ".toml", ".cfg", ".ini", ".yaml", ".yml", ".json",
+                   *JS_EXTENSIONS}
 MAX_FILE_BYTES = 1_000_000
 EMBED_BATCH_SIZE = 16
 EMBED_MAX_CHARS = 8_000  # embedding model context guard
@@ -39,6 +41,10 @@ EMBED_MAX_CHARS = 8_000  # embedding model context guard
 # Baseline RAG chunking parameters (fixed, conventional — the thing we must beat)
 BASELINE_CHUNK_TOKENS = 512
 BASELINE_OVERLAP_TOKENS = 64
+
+# File extension -> language label (drives which structural parser runs).
+_LANGUAGE_BY_EXT = {".py": "python", ".md": "markdown",
+                    **{ext: "javascript" for ext in JS_EXTENSIONS}}
 
 
 async def handle_ingest_source(job_id: uuid.UUID, payload: dict[str, Any]) -> None:
@@ -197,7 +203,7 @@ async def _ingest_files(
 
         file_id = uuid.uuid4()
         sha = hashlib.sha256(content.encode()).hexdigest()
-        language = {"py": "python", "md": "markdown"}.get(path.suffix.lstrip("."), "text")
+        language = _LANGUAGE_BY_EXT.get(path.suffix.lower(), "text")
         result = await session.execute(
             text(
                 "INSERT INTO source_file "
@@ -229,6 +235,13 @@ async def _parse_files(
                 artifacts, edges = parse_python_file(f["path"], f["content"])
                 unresolved.extend(edges)
             except SyntaxError:
+                stats["parse_fallbacks"] += 1
+                artifacts = []
+        elif f["language"] == "javascript":
+            try:
+                artifacts, edges = parse_js_file(f["path"], f["content"])
+                unresolved.extend(edges)
+            except Exception:  # noqa: BLE001 — regex parser must never fail ingestion
                 stats["parse_fallbacks"] += 1
                 artifacts = []
         elif f["language"] == "markdown":
@@ -318,8 +331,19 @@ async def _link_edges(
         if edge.kind == "contains":
             to_id = by_qn.get(edge.to_name)
         elif edge.kind == "imports":
-            candidate = edge.to_name.replace(".", "/")
-            for suffix in (f"{candidate}.py", f"{candidate}/__init__.py"):
+            # Python imports arrive dotted ('a.b.c'); JS/TS imports arrive as
+            # repo-relative paths pre-resolved by the parser ('src/a/b'). Try
+            # both language families' module-file conventions — a bare package
+            # ('react', 'os') simply matches nothing and stays unresolved.
+            candidate = edge.to_name.replace(".", "/") if "/" not in edge.to_name else edge.to_name
+            suffixes = [
+                f"{candidate}.py", f"{candidate}/__init__.py",
+                f"{candidate}.js", f"{candidate}.jsx", f"{candidate}.mjs", f"{candidate}.cjs",
+                f"{candidate}.ts", f"{candidate}.tsx",
+                f"{candidate}/index.js", f"{candidate}/index.ts",
+                f"{candidate}/index.jsx", f"{candidate}/index.tsx",
+            ]
+            for suffix in suffixes:
                 for qn, aid in by_qn.items():
                     if qn == suffix or qn.endswith(f"/{suffix}"):
                         to_id = aid

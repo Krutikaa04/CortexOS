@@ -1,11 +1,15 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { api } from "@/lib/api";
 import { LiveExecutionEventStream } from "@/lib/eventStream";
 import { useRepo } from "@/lib/repo-context";
-import type { ExecutionEvent, ImpactReport as Report } from "@/lib/types";
+import type {
+  ExecutionEvent,
+  ImpactHistoryEntry,
+  ImpactReport as Report,
+} from "@/lib/types";
 import { ImpactReport } from "@/components/ImpactReport";
 import { ArtifactDrawer, type ArtifactTarget } from "@/components/ArtifactDrawer";
 import { IconCheck, IconSpinner } from "@/components/icons";
@@ -45,9 +49,36 @@ export default function ImpactGuardPage() {
   const [events, setEvents] = useState<ExecutionEvent[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [drawer, setDrawer] = useState<ArtifactTarget | null>(null);
+  const [history, setHistory] = useState<ImpactHistoryEntry[]>([]);
   const unsubRef = useRef<(() => void) | null>(null);
 
   useEffect(() => () => unsubRef.current?.(), []);
+
+  // Past analyses are persisted as executions — load them so a reviewer can
+  // revisit any prior verdict without re-running it.
+  const refreshHistory = useCallback(async () => {
+    if (!versionId) return;
+    try {
+      setHistory(await api.impactHistory(versionId));
+    } catch {
+      /* history is best-effort */
+    }
+  }, [versionId]);
+
+  useEffect(() => {
+    refreshHistory();
+  }, [refreshHistory]);
+
+  const openHistorical = async (id: string) => {
+    setError(null);
+    try {
+      const ex = await api.execution(id);
+      if (ex.status === "succeeded") setReport(ex.metrics as unknown as Report);
+      else setError(ex.failure_reason ?? "analysis did not complete");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  };
 
   // Both input modes feed the same background analysis + live event stream.
   const track = (execution_id: string) => {
@@ -63,6 +94,7 @@ export default function ImpactGuardPage() {
           setReport(ex.metrics as unknown as Report);
         }
         setRunning(false);
+        refreshHistory();
       },
       (err) => {
         setError(err.message);
@@ -232,8 +264,59 @@ export default function ImpactGuardPage() {
             />
           </div>
         )}
+
+        {history.length > 0 && (
+          <div className="mt-8">
+            <div className="mb-2 px-1 text-[10px] uppercase tracking-wider text-ink-500">
+              Analysis history
+            </div>
+            <div className="panel divide-y divide-ink-800">
+              {history.map((h) => (
+                <button
+                  key={h.id}
+                  onClick={() => h.status === "succeeded" && openHistorical(h.id)}
+                  disabled={h.status !== "succeeded"}
+                  className="flex w-full items-center gap-3 px-3 py-2.5 text-left transition-colors hover:bg-ink-800/40 disabled:cursor-default disabled:opacity-60"
+                >
+                  <RiskDot level={h.risk_level} status={h.status} />
+                  <span className="min-w-0 flex-1 truncate text-[13px] text-ink-200">
+                    {h.label}
+                  </span>
+                  {h.confidence != null && (
+                    <span className="shrink-0 text-[11px] text-ink-500">
+                      {h.confidence}% conf
+                    </span>
+                  )}
+                  <span className="shrink-0 text-[11px] text-ink-600">
+                    {new Date(h.started_at).toLocaleString()}
+                  </span>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
       <ArtifactDrawer target={drawer} onClose={() => setDrawer(null)} />
     </div>
   );
+}
+
+function RiskDot({
+  level,
+  status,
+}: {
+  level: ImpactHistoryEntry["risk_level"];
+  status: ImpactHistoryEntry["status"];
+}) {
+  if (status === "running")
+    return <span className="h-2 w-2 shrink-0 rounded-full bg-signal-blue animate-pulse" />;
+  if (status === "failed")
+    return <span className="h-2 w-2 shrink-0 rounded-full bg-ink-600" />;
+  const color =
+    level === "HIGH"
+      ? "bg-signal-red"
+      : level === "MEDIUM"
+        ? "bg-signal-amber"
+        : "bg-signal-green";
+  return <span className={`h-2 w-2 shrink-0 rounded-full ${color}`} />;
 }

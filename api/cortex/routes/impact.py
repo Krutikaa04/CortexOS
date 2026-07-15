@@ -129,6 +129,46 @@ async def _run_impact(execution_id: uuid.UUID, version_id: uuid.UUID, diff: str)
             await session.commit()
 
 
+@router.get("/{version_id}/impact/history")
+async def impact_history(
+    version_id: uuid.UUID,
+    limit: int = 20,
+    session: AsyncSession = Depends(get_session),
+) -> list[dict]:
+    """Past Change Impact Guard analyses for a repository version.
+
+    Impact runs are already persisted as executions (mode='impact') with the
+    full report in ``metrics`` — this reuses that storage rather than adding a
+    parallel table, so a reviewer can revisit any prior analysis and its
+    verdict without re-running it.
+    """
+    rows = (
+        await session.execute(
+            text(
+                "SELECT id, query, answer, status, metrics, started_at, finished_at "
+                "FROM execution WHERE source_version_id = :vid AND mode = 'impact' "
+                "ORDER BY started_at DESC LIMIT :limit"
+            ),
+            {"vid": version_id, "limit": min(limit, 100)},
+        )
+    ).all()
+    out: list[dict] = []
+    for r in rows:
+        m = r.metrics or {}
+        out.append({
+            "id": str(r.id),
+            "label": r.query,
+            "status": r.status,
+            "risk_level": m.get("risk_level"),
+            "confidence": m.get("confidence"),
+            "changed_files": m.get("changed_files") or [],
+            "summary": m.get("summary") or r.answer,
+            "started_at": r.started_at.isoformat(),
+            "finished_at": r.finished_at.isoformat() if r.finished_at else None,
+        })
+    return out
+
+
 @router.post("/{version_id}/impact", status_code=202)
 async def analyze_impact(
     version_id: uuid.UUID,

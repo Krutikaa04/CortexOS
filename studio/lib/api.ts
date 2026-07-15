@@ -10,6 +10,7 @@ import type {
   Execution,
   ExecutionEvent,
   HealthStatus,
+  ImpactHistoryEntry,
   JobInfo,
   Neighbors,
   RepoGraph,
@@ -86,4 +87,9 @@ export const api = {
     post<{ execution_id: string }>(`/v1/sources/${versionId}/impact/github`, {
       pr_url: prUrl,
     }),
+  // Persisted PR/impact analyses for a repository version (reuses executions).
+  impactHistory: (versionId: string, limit = 20) =>
+    get<ImpactHistoryEntry[]>(
+      `/v1/sources/${versionId}/impact/history?limit=${limit}`,
+    ),
 };

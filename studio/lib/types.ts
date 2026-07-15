@@ -182,6 +182,18 @@ export interface ImpactReport {
   evidence_grounded: boolean;
 }
 
+export interface ImpactHistoryEntry {
+  id: string;
+  label: string;
+  status: "running" | "succeeded" | "failed";
+  risk_level: "HIGH" | "MEDIUM" | "LOW" | null;
+  confidence: number | null;
+  changed_files: string[];
+  summary: string | null;
+  started_at: string;
+  finished_at: string | null;
+}
+
 export interface DependencyNode {
   id: string;
   qualified_name: string;

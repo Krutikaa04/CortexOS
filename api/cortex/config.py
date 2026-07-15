@@ -23,6 +23,11 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     api_token: str = ""
 
+    # Token for cloning private https git repositories (e.g. a GitHub PAT).
+    # Supplied only via secure configuration (CORTEX_GIT_TOKEN); never logged,
+    # never returned by the API. Empty = public repositories only.
+    git_token: str = ""
+
     # Comma-separated job kinds this worker claims (its workload lane).
     # Empty = claim every registered kind (single-worker dev setups).
     worker_kinds: str = ""
