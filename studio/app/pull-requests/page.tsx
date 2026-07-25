@@ -281,6 +281,17 @@ export default function ImpactGuardPage() {
                   <RiskDot level={h.risk_level} status={h.status} />
                   <span className="min-w-0 flex-1 truncate text-[13px] text-ink-200">
                     {h.label}
+                    {h.pr_url && (
+                      <a
+                        href={h.pr_url}
+                        target="_blank"
+                        rel="noreferrer"
+                        onClick={(e) => e.stopPropagation()}
+                        className="ml-2 text-[11px] text-signal-blue hover:underline"
+                      >
+                        PR ↗
+                      </a>
+                    )}
                   </span>
                   {h.confidence != null && (
                     <span className="shrink-0 text-[11px] text-ink-500">

@@ -182,6 +182,33 @@ export interface ImpactReport {
   evidence_grounded: boolean;
 }
 
+export interface ChatSession {
+  id: string;
+  title: string;
+  message_count: number;
+  created_at: string;
+  last_activity: string | null;
+}
+
+export interface ChatMessageFile {
+  qualified_name: string;
+  path: string;
+  symbol: string;
+  representation?: string;
+  tokens?: number;
+}
+
+export interface ChatMessage {
+  id: string;
+  query: string;
+  answer: string | null;
+  status: string;
+  failure_reason: string | null;
+  metrics: ExecutionMetrics | null;
+  files: ChatMessageFile[];
+  started_at: string;
+}
+
 export interface ImpactHistoryEntry {
   id: string;
   label: string;
@@ -189,6 +216,7 @@ export interface ImpactHistoryEntry {
   risk_level: "HIGH" | "MEDIUM" | "LOW" | null;
   confidence: number | null;
   changed_files: string[];
+  pr_url?: string | null;
   summary: string | null;
   started_at: string;
   finished_at: string | null;

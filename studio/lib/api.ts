@@ -7,6 +7,8 @@ import type {
   ArtifactRef,
   BenchmarkRun,
   BenchmarkSummary,
+  ChatMessage,
+  ChatSession,
   Execution,
   ExecutionEvent,
   HealthStatus,
@@ -42,6 +44,19 @@ async function post<T>(path: string, body: unknown): Promise<T> {
     throw new Error(detail.detail ?? `${path}: HTTP ${res.status}`);
   }
   return res.json();
+}
+
+async function send<T>(method: "PATCH" | "DELETE", path: string, body?: unknown): Promise<T> {
+  const res = await fetch(`${API_URL}${path}`, {
+    method,
+    headers: body ? { "Content-Type": "application/json" } : undefined,
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (!res.ok) {
+    const detail = await res.json().catch(() => ({}));
+    throw new Error(detail.detail ?? `${path}: HTTP ${res.status}`);
+  }
+  return res.status === 204 ? (undefined as T) : res.json();
 }
 
 export const api = {
@@ -97,4 +112,16 @@ export const api = {
     get<ImpactHistoryEntry[]>(
       `/v1/sources/${versionId}/impact/history?limit=${limit}`,
     ),
+
+  // --- Chat sessions (repository-scoped conversations) ---
+  listSessions: (versionId: string) =>
+    get<ChatSession[]>(`/v1/sessions?source_version_id=${versionId}`),
+  createSession: (versionId: string, title?: string) =>
+    post<ChatSession>("/v1/sessions", { source_version_id: versionId, title }),
+  sessionMessages: (sessionId: string) =>
+    get<ChatMessage[]>(`/v1/sessions/${sessionId}/messages`),
+  renameSession: (sessionId: string, title: string) =>
+    send<{ id: string; title: string }>("PATCH", `/v1/sessions/${sessionId}`, { title }),
+  deleteSession: (sessionId: string) =>
+    send<void>("DELETE", `/v1/sessions/${sessionId}`),
 };

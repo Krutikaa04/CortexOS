@@ -91,3 +91,36 @@ def test_strings_and_comments_do_not_create_symbols():
     arts, edges = _arts(src, "z.js")
     assert "z.js::Fake" not in arts
     assert not any(e.kind == "inherits" for e in edges)
+
+
+REACT_SRC = """\
+import Button from '@/components/Button';
+import { Card } from '@/components/Card';
+
+export default function Page() {
+  const onClick = () => save();
+  return (
+    <div className="wrap">
+      <Button onClick={onClick} />
+      <Card title="hi" />
+      <span>plain html ignored</span>
+    </div>
+  );
+}
+"""
+
+
+def test_jsx_components_become_reference_edges():
+    _, edges = _arts(REACT_SRC, "app/page.tsx")
+    refs = {e.to_name for e in edges if e.kind == "calls"}
+    assert "Button" in refs and "Card" in refs  # capitalized JSX = components
+    assert "save" in refs  # regular call still captured
+    assert "span" not in refs and "div" not in refs  # lowercase HTML intrinsics ignored
+
+
+def test_path_alias_imports_recorded_verbatim():
+    _, edges = _arts(REACT_SRC, "app/page.tsx")
+    imports = {e.to_name for e in edges if e.kind == "imports"}
+    # '@/...' aliases are kept as-is here; the link stage resolves them to files
+    assert "@/components/Button" in imports
+    assert "@/components/Card" in imports

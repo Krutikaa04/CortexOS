@@ -17,6 +17,7 @@ from cortex.routes.executions import router as executions_router
 from cortex.routes.graph import router as graph_router
 from cortex.routes.impact import router as impact_router
 from cortex.routes.jobs import router as jobs_router
+from cortex.routes.sessions import router as sessions_router
 from cortex.routes.sources import router as sources_router
 
 logging.basicConfig(
@@ -29,11 +30,33 @@ log = logging.getLogger("cortex.api")
 WORKER_STALE_SECONDS = 30
 
 
+# A 'running' execution older than this with no worker touching it was
+# orphaned by an API restart (executions run as in-process tasks). It is
+# failed on next startup so the UI never shows a permanently "running" turn.
+STALE_EXECUTION_MINUTES = 15
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
     log.info("cortex api starting: env=%s provider=%s version=%s",
              settings.env, settings.model_provider, __version__)
+    try:
+        async with get_session_factory()() as session:
+            result = await session.execute(
+                text(
+                    "UPDATE execution SET status = 'failed', "
+                    "  failure_reason = 'orphaned by runtime restart', finished_at = now() "
+                    "WHERE status = 'running' "
+                    "  AND started_at < now() - make_interval(mins => :m)"
+                ),
+                {"m": STALE_EXECUTION_MINUTES},
+            )
+            await session.commit()
+            if result.rowcount:
+                log.info("recovered %d orphaned execution(s)", result.rowcount)
+    except Exception as exc:  # noqa: BLE001 — startup must survive a cold DB
+        log.warning("stale-execution sweep skipped: %s", exc)
     yield
     # graceful shutdown: release DB connections so a rolling deploy doesn't
     # leak pooled connections against a managed Postgres connection cap
@@ -48,6 +71,7 @@ app.include_router(impact_router)
 app.include_router(executions_router)
 app.include_router(benchmarks_router)
 app.include_router(jobs_router)
+app.include_router(sessions_router)
 
 _settings = get_settings()
 # Production must name its allowed browser origins (the Vercel Studio URL);

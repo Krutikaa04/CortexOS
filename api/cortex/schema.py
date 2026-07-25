@@ -268,6 +268,24 @@ class Job(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
+class ChatSession(Base):
+    """A named, repository-scoped conversation.
+
+    Only *metadata* lives here — the messages themselves are the existing
+    `execution` rows carrying this session_id, so there is no second memory
+    system. `last_activity`/message count are derived from those executions.
+    """
+
+    __tablename__ = "chat_session"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    source_version_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("source_version.id"), nullable=False, index=True
+    )
+    title: Mapped[str] = mapped_column(String(200), default="New chat", nullable=False)
+    created_at: Mapped[datetime] = _created_at()
+
+
 class WorkerHeartbeat(Base):
     """Liveness beacon each worker upserts every poll.
 

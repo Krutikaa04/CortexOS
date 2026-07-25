@@ -6,14 +6,14 @@ import { api } from "@/lib/api";
 import { LiveExecutionEventStream } from "@/lib/eventStream";
 import { useRepo } from "@/lib/repo-context";
 import { filesUsed } from "@/lib/execution-insights";
-import type { Execution, ExecutionEvent } from "@/lib/types";
+import type { ChatMessage, ChatSession, Execution, ExecutionEvent } from "@/lib/types";
 import { AnswerBody } from "@/components/AnswerBody";
 import { ArtifactDrawer, type ArtifactTarget } from "@/components/ArtifactDrawer";
 import { FilesUsed } from "@/components/FilesUsed";
 import { RuntimePanel } from "@/components/RuntimePanel";
 import { StageIndicator } from "@/components/StageIndicator";
 import { CopyButton } from "@/components/CodeBlock";
-import { IconSend, IconSpinner } from "@/components/icons";
+import { IconClose, IconSend, IconSpinner } from "@/components/icons";
 
 interface Turn {
   id: string;
@@ -36,67 +36,58 @@ const EXAMPLES = [
 const BASELINE_POLL_MS = 4000;
 const BASELINE_TIMEOUT_MS = 10 * 60_000;
 
-// --- Session memory ---------------------------------------------------------
-// A conversation is one SVM session: every question carries a stable
-// session_id so the Kernel keeps working-memory pages resident across turns
-// (KV-cache reuse), and the transcript survives reloads. State is persisted
-// per repository version in localStorage — no new backend system.
-const STORAGE_PREFIX = "cortex:chat:";
-
-interface PersistedSession {
-  sessionId: string;
-  turns: Turn[];
-}
-
-function newSessionId(): string {
-  return typeof crypto !== "undefined" && crypto.randomUUID
-    ? crypto.randomUUID()
-    : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-}
-
-// Persist a lightweight turn: drop live-only events except the final
-// CONTEXT_COMPILED one (all filesUsed() needs), and never persist a turn that
-// is still running.
-function serializeTurns(turns: Turn[]): Turn[] {
-  return turns
-    .filter((t) => t.status !== "running")
-    .map((t) => ({
-      ...t,
-      events: t.events.filter((e) => e.event_type === "CONTEXT_COMPILED"),
-    }));
-}
-
-function loadSession(versionId: string): PersistedSession {
-  try {
-    const raw = localStorage.getItem(STORAGE_PREFIX + versionId);
-    if (raw) {
-      const parsed = JSON.parse(raw) as PersistedSession;
-      if (parsed.sessionId) return { sessionId: parsed.sessionId, turns: parsed.turns ?? [] };
-    }
-  } catch {
-    /* corrupt / unavailable storage — start fresh */
-  }
-  return { sessionId: newSessionId(), turns: [] };
-}
-
-function saveSession(versionId: string, sessionId: string, turns: Turn[]): void {
-  try {
-    localStorage.setItem(
-      STORAGE_PREFIX + versionId,
-      JSON.stringify({ sessionId, turns: serializeTurns(turns) }),
-    );
-  } catch {
-    /* storage full / unavailable — memory degrades gracefully */
-  }
+// Reconstruct a rendered Turn from a persisted message. Synthesizing a
+// CONTEXT_COMPILED event lets the existing filesUsed()/AnswerTurn render the
+// evidence panel for reloaded conversations, identical to a live turn.
+function messageToTurn(m: ChatMessage): Turn {
+  const events: ExecutionEvent[] = m.files.length
+    ? [{
+        seq: 0,
+        event_type: "CONTEXT_COMPILED",
+        ts: m.started_at,
+        payload: {
+          included: m.files.map((f) => ({
+            qualified_name: f.qualified_name,
+            representation: f.representation,
+            tokens: f.tokens,
+          })),
+        },
+      }]
+    : [];
+  const execution = {
+    id: m.id,
+    mode: "cortex",
+    query: m.query,
+    answer: m.answer,
+    status: m.status,
+    failure_reason: m.failure_reason,
+    metrics: m.metrics ?? undefined,
+    session_id: null,
+    started_at: m.started_at,
+    finished_at: m.started_at,
+  } as unknown as Execution;
+  return {
+    id: m.id,
+    query: m.query,
+    events,
+    execution,
+    status: m.status === "failed" ? "error" : "done",
+    error: m.failure_reason ?? undefined,
+    baselineTokens: null,
+    baselinePending: false,
+  };
 }
 
 export default function ChatPage() {
   const { versionId, selected, isReady, loading } = useRepo();
+  const [sessions, setSessions] = useState<ChatSession[]>([]);
+  const [sessionId, setSessionId] = useState<string | null>(null);
+  const [sessionsLoading, setSessionsLoading] = useState(false);
+  const [historyLoading, setHistoryLoading] = useState(false);
   const [turns, setTurns] = useState<Turn[]>([]);
   const [query, setQuery] = useState("");
   const [activeId, setActiveId] = useState<string | null>(null);
   const [drawer, setDrawer] = useState<ArtifactTarget | null>(null);
-  const [sessionId, setSessionId] = useState<string | null>(null);
 
   const unsubRef = useRef<(() => void) | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -105,21 +96,49 @@ export default function ChatPage() {
   const running = turns.some((t) => t.status === "running");
   const active = turns.find((t) => t.id === activeId) ?? null;
   const showPanel = active?.execution?.status === "succeeded" || active?.status === "running";
+  const empty = turns.length === 0;
 
-  // Restore this repository's conversation + session id when the repo changes.
+  const refreshSessions = useCallback(async (vid: string) => {
+    try {
+      return await api.listSessions(vid);
+    } catch {
+      return [];
+    }
+  }, []);
+
+  const loadMessages = useCallback(async (sid: string) => {
+    setHistoryLoading(true);
+    try {
+      const msgs = await api.sessionMessages(sid);
+      setTurns(msgs.map(messageToTurn));
+      setActiveId(msgs.length ? msgs[msgs.length - 1].id : null);
+    } catch {
+      setTurns([]);
+    } finally {
+      setHistoryLoading(false);
+    }
+  }, []);
+
+  // On repo change: load its conversations, open the most recent (or none).
   useEffect(() => {
     if (!versionId || loadedVersionRef.current === versionId) return;
     loadedVersionRef.current = versionId;
-    const { sessionId: sid, turns: restored } = loadSession(versionId);
-    setSessionId(sid);
-    setTurns(restored);
-    setActiveId(restored.length ? restored[restored.length - 1].id : null);
-  }, [versionId]);
-
-  // Persist after each settled change so the transcript survives reloads.
-  useEffect(() => {
-    if (versionId && sessionId && !running) saveSession(versionId, sessionId, turns);
-  }, [versionId, sessionId, turns, running]);
+    setSessionsLoading(true);
+    unsubRef.current?.();
+    (async () => {
+      const list = await refreshSessions(versionId);
+      setSessions(list);
+      if (list.length) {
+        setSessionId(list[0].id);
+        await loadMessages(list[0].id);
+      } else {
+        setSessionId(null);
+        setTurns([]);
+        setActiveId(null);
+      }
+      setSessionsLoading(false);
+    })();
+  }, [versionId, refreshSessions, loadMessages]);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
@@ -127,40 +146,106 @@ export default function ChatPage() {
 
   useEffect(() => () => unsubRef.current?.(), []);
 
-  const newChat = useCallback(() => {
-    if (!versionId || running) return;
-    unsubRef.current?.();
-    const sid = newSessionId();
-    setSessionId(sid);
-    setTurns([]);
-    setActiveId(null);
-    saveSession(versionId, sid, []);
-  }, [versionId, running]);
-
   const patchTurn = useCallback((id: string, patch: Partial<Turn>) => {
     setTurns((prev) => prev.map((t) => (t.id === id ? { ...t, ...patch } : t)));
   }, []);
+
+  const switchSession = useCallback(
+    async (sid: string) => {
+      if (sid === sessionId || running) return;
+      unsubRef.current?.();
+      setSessionId(sid);
+      await loadMessages(sid);
+    },
+    [sessionId, running, loadMessages],
+  );
+
+  const newChat = useCallback(async () => {
+    if (!versionId || running) return;
+    unsubRef.current?.();
+    try {
+      const s = await api.createSession(versionId);
+      setSessions((prev) => [s, ...prev]);
+      setSessionId(s.id);
+      setTurns([]);
+      setActiveId(null);
+    } catch {
+      /* leave current state on failure */
+    }
+  }, [versionId, running]);
+
+  const renameSession = useCallback(async (sid: string, title: string) => {
+    const clean = title.trim();
+    if (!clean) return;
+    setSessions((prev) => prev.map((s) => (s.id === sid ? { ...s, title: clean } : s)));
+    try {
+      await api.renameSession(sid, clean);
+    } catch {
+      /* optimistic; ignore */
+    }
+  }, []);
+
+  const deleteSession = useCallback(
+    async (sid: string) => {
+      const remaining = sessions.filter((s) => s.id !== sid);
+      setSessions(remaining);
+      try {
+        await api.deleteSession(sid);
+      } catch {
+        /* ignore */
+      }
+      if (sid === sessionId) {
+        if (remaining.length) {
+          setSessionId(remaining[0].id);
+          await loadMessages(remaining[0].id);
+        } else {
+          setSessionId(null);
+          setTurns([]);
+          setActiveId(null);
+        }
+      }
+    },
+    [sessions, sessionId, loadMessages],
+  );
 
   const ask = useCallback(
     async (q: string) => {
       const text = q.trim();
       if (!text || running || !versionId) return;
       setQuery("");
+
+      // Ensure a conversation exists (auto-create on first message).
+      let sid = sessionId;
+      let created: ChatSession | null = null;
+      if (!sid) {
+        try {
+          created = await api.createSession(versionId);
+          sid = created.id;
+          setSessionId(sid);
+          setSessions((prev) => [created!, ...prev]);
+        } catch (e) {
+          const id = `err-${Date.now()}`;
+          setTurns((prev) => [
+            ...prev,
+            { id, query: text, events: [], execution: null, status: "error",
+              error: e instanceof Error ? e.message : String(e),
+              baselineTokens: null, baselinePending: false },
+          ]);
+          return;
+        }
+      }
+      const isFirstMessage = turns.length === 0;
+
       try {
         const { execution_id } = await api.createExecution({
           query: text,
           mode: "cortex",
           source_version_id: versionId,
-          session_id: sessionId,
+          session_id: sid,
         });
         const turn: Turn = {
-          id: execution_id,
-          query: text,
-          events: [],
-          execution: null,
-          status: "running",
-          baselineTokens: null,
-          baselinePending: false,
+          id: execution_id, query: text, events: [], execution: null,
+          status: "running", baselineTokens: null, baselinePending: false,
         };
         setTurns((prev) => [...prev, turn]);
         setActiveId(execution_id);
@@ -177,6 +262,12 @@ export default function ChatPage() {
             try {
               const final = await api.execution(execution_id);
               patchTurn(execution_id, { execution: final, status: "done" });
+              // Auto-title a brand-new conversation from its first question.
+              if (isFirstMessage && sid) {
+                const title = text.length > 48 ? `${text.slice(0, 48)}…` : text;
+                renameSession(sid, title);
+              }
+              if (versionId) setSessions(await refreshSessions(versionId));
             } catch (e) {
               patchTurn(execution_id, {
                 status: "error",
@@ -187,24 +278,16 @@ export default function ChatPage() {
           (err) => patchTurn(execution_id, { status: "error", error: err.message }),
         );
       } catch (e) {
-        // surface create failure as a transient error turn
         const id = `err-${Date.now()}`;
         setTurns((prev) => [
           ...prev,
-          {
-            id,
-            query: text,
-            events: [],
-            execution: null,
-            status: "error",
+          { id, query: text, events: [], execution: null, status: "error",
             error: e instanceof Error ? e.message : String(e),
-            baselineTokens: null,
-            baselinePending: false,
-          },
+            baselineTokens: null, baselinePending: false },
         ]);
       }
     },
-    [running, versionId, sessionId, patchTurn],
+    [running, versionId, sessionId, turns.length, patchTurn, renameSession, refreshSessions],
   );
 
   const runBaseline = useCallback(
@@ -251,34 +334,30 @@ export default function ChatPage() {
 
   // ---- guards ----
   if (!loading && !selected) return <EmptyRepoState kind="none" />;
-  if (!loading && selected && !isReady) return <EmptyRepoState kind="not-ready" name={selected.display_name} />;
-
-  const empty = turns.length === 0;
+  if (!loading && selected && !isReady)
+    return <EmptyRepoState kind="not-ready" name={selected.display_name} />;
 
   return (
     <div className="flex h-full">
-      <div className="flex min-w-0 flex-1 flex-col">
-        {/* session header — only once a conversation exists */}
-        {!empty && (
-          <div className="flex items-center justify-between border-b border-ink-800 bg-ink-950/40 px-6 py-2.5">
-            <span className="flex items-center gap-2 text-xs text-ink-500">
-              <span className="h-1.5 w-1.5 rounded-full bg-signal-green" />
-              Session memory active · {turns.length} turn{turns.length === 1 ? "" : "s"} resident
-            </span>
-            <button
-              onClick={newChat}
-              disabled={running}
-              className="rounded-md border border-ink-700 px-2.5 py-1 text-xs text-ink-300 transition-colors hover:border-ink-500 hover:text-ink-100 disabled:opacity-40"
-            >
-              New chat
-            </button>
-          </div>
-        )}
+      <ChatSessionsSidebar
+        sessions={sessions}
+        activeId={sessionId}
+        loading={sessionsLoading}
+        disabled={running}
+        onNew={newChat}
+        onSwitch={switchSession}
+        onRename={renameSession}
+        onDelete={deleteSession}
+      />
 
-        {/* conversation */}
+      <div className="flex min-w-0 flex-1 flex-col">
         <div ref={scrollRef} className="flex-1 overflow-auto">
           <div className="mx-auto w-full max-w-3xl px-6 py-8">
-            {empty ? (
+            {historyLoading ? (
+              <div className="flex items-center justify-center pt-16 text-sm text-ink-500">
+                <IconSpinner /> <span className="ml-2">Loading conversation…</span>
+              </div>
+            ) : empty ? (
               <WelcomeState onPick={(q) => ask(q)} disabled={!versionId} />
             ) : (
               <div className="space-y-8">
@@ -315,7 +394,6 @@ export default function ChatPage() {
           </div>
         </div>
 
-        {/* composer */}
         <Composer
           value={query}
           onChange={setQuery}
@@ -326,7 +404,6 @@ export default function ChatPage() {
         />
       </div>
 
-      {/* right runtime panel */}
       {showPanel && active && (
         <div className="hidden w-[340px] shrink-0 border-l border-ink-800 bg-ink-950/40 lg:block">
           {active.execution ? (
@@ -347,6 +424,126 @@ export default function ChatPage() {
       )}
 
       <ArtifactDrawer target={drawer} onClose={() => setDrawer(null)} />
+    </div>
+  );
+}
+
+function ChatSessionsSidebar({
+  sessions,
+  activeId,
+  loading,
+  disabled,
+  onNew,
+  onSwitch,
+  onRename,
+  onDelete,
+}: {
+  sessions: ChatSession[];
+  activeId: string | null;
+  loading: boolean;
+  disabled: boolean;
+  onNew: () => void;
+  onSwitch: (id: string) => void;
+  onRename: (id: string, title: string) => void;
+  onDelete: (id: string) => void;
+}) {
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [draft, setDraft] = useState("");
+
+  const startRename = (s: ChatSession) => {
+    setEditingId(s.id);
+    setDraft(s.title);
+  };
+  const commitRename = () => {
+    if (editingId) onRename(editingId, draft);
+    setEditingId(null);
+  };
+
+  return (
+    <div className="hidden w-60 shrink-0 flex-col border-r border-ink-800 bg-ink-950/40 md:flex">
+      <div className="p-3">
+        <button
+          onClick={onNew}
+          disabled={disabled}
+          className="btn-primary w-full justify-center disabled:opacity-40"
+        >
+          + New chat
+        </button>
+      </div>
+      <div className="flex-1 overflow-auto px-2 pb-3">
+        {loading ? (
+          <div className="px-2 py-4 text-xs text-ink-500">Loading conversations…</div>
+        ) : sessions.length === 0 ? (
+          <div className="px-2 py-4 text-xs text-ink-600">
+            No conversations yet. Start one to see it here.
+          </div>
+        ) : (
+          <div className="space-y-0.5">
+            {sessions.map((s) => {
+              const isActive = s.id === activeId;
+              return (
+                <div
+                  key={s.id}
+                  className={`group flex items-center gap-1 rounded-lg px-2 py-2 text-sm transition-colors ${
+                    isActive ? "bg-ink-800 text-ink-100" : "text-ink-300 hover:bg-ink-900"
+                  }`}
+                >
+                  {editingId === s.id ? (
+                    <input
+                      autoFocus
+                      value={draft}
+                      onChange={(e) => setDraft(e.target.value)}
+                      onBlur={commitRename}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") commitRename();
+                        if (e.key === "Escape") setEditingId(null);
+                      }}
+                      className="min-w-0 flex-1 rounded bg-ink-950 px-1.5 py-0.5 text-[13px] text-ink-100 outline-none"
+                    />
+                  ) : (
+                    <button
+                      onClick={() => onSwitch(s.id)}
+                      className="min-w-0 flex-1 truncate text-left"
+                      title={s.title}
+                    >
+                      {s.title}
+                      <span className="ml-1 text-[10px] text-ink-600">
+                        {s.message_count > 0 ? `· ${s.message_count}` : ""}
+                      </span>
+                    </button>
+                  )}
+                  {editingId !== s.id && (
+                    <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
+                      <button
+                        onClick={() => startRename(s)}
+                        title="Rename"
+                        className="rounded p-1 text-ink-500 hover:text-ink-200"
+                      >
+                        <svg viewBox="0 0 24 24" width="13" height="13" fill="none"
+                          stroke="currentColor" strokeWidth="2" strokeLinecap="round"
+                          strokeLinejoin="round">
+                          <path d="M12 20h9" />
+                          <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" />
+                        </svg>
+                      </button>
+                      <button
+                        onClick={() => {
+                          if (confirm(`Delete "${s.title}"? This removes its messages.`))
+                            onDelete(s.id);
+                        }}
+                        title="Delete"
+                        className="rounded p-1 text-ink-500 hover:text-signal-red"
+                      >
+                        <IconClose className="h-3 w-3" />
+                      </button>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -372,9 +569,7 @@ function AnswerTurn({
         : null;
   return (
     <div className="space-y-4" onMouseEnter={onFocus}>
-      {intentChip && (
-        <span className={`badge ${intentChip.cls}`}>{intentChip.label}</span>
-      )}
+      {intentChip && <span className={`badge ${intentChip.cls}`}>{intentChip.label}</span>}
       <div className="group relative">
         <AnswerBody text={answer} />
         <div className="absolute -right-1 -top-1 opacity-0 transition-opacity group-hover:opacity-100">
@@ -444,7 +639,7 @@ function Composer({
           <span>
             {repoName ? (
               <>
-                Answering over <span className="text-ink-400">{repoName}</span> · live execution
+                Answering over <span className="text-ink-400">{repoName}</span> · session memory on
               </>
             ) : (
               "No repository selected"
@@ -466,12 +661,10 @@ function WelcomeState({ onPick, disabled }: { onPick: (q: string) => void; disab
       <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-signal-blue/15 font-mono text-lg font-bold text-signal-blue">
         C
       </div>
-      <h1 className="mt-4 text-2xl font-semibold text-ink-100">
-        Ask your repository anything
-      </h1>
+      <h1 className="mt-4 text-2xl font-semibold text-ink-100">Ask your repository anything</h1>
       <p className="mt-2 max-w-md text-sm text-ink-400">
-        Understand code, trace impact, generate changes, or debug — answered by
-        live execution over the real repository at minimum inference cost.
+        Understand code, trace impact, generate changes, or debug — answered by live execution over
+        the real repository at minimum inference cost.
       </p>
       <div className="mt-8 grid w-full max-w-xl grid-cols-1 gap-2 sm:grid-cols-2">
         {EXAMPLES.map((ex) => (
@@ -489,13 +682,7 @@ function WelcomeState({ onPick, disabled }: { onPick: (q: string) => void; disab
   );
 }
 
-function EmptyRepoState({
-  kind,
-  name,
-}: {
-  kind: "none" | "not-ready";
-  name?: string;
-}) {
+function EmptyRepoState({ kind, name }: { kind: "none" | "not-ready"; name?: string }) {
   return (
     <div className="flex h-full items-center justify-center p-6">
       <div className="max-w-sm text-center">

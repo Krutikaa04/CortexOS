@@ -345,14 +345,21 @@ async def _link_edges(
             # repo-relative paths pre-resolved by the parser ('src/a/b'). Try
             # both language families' module-file conventions — a bare package
             # ('react', 'os') simply matches nothing and stays unresolved.
-            candidate = edge.to_name.replace(".", "/") if "/" not in edge.to_name else edge.to_name
-            suffixes = [
-                f"{candidate}.py", f"{candidate}/__init__.py",
-                f"{candidate}.js", f"{candidate}.jsx", f"{candidate}.mjs", f"{candidate}.cjs",
-                f"{candidate}.ts", f"{candidate}.tsx",
-                f"{candidate}/index.js", f"{candidate}/index.ts",
-                f"{candidate}/index.jsx", f"{candidate}/index.tsx",
-            ]
+            # Base candidate paths to try. Python dotted names become slash
+            # paths; JS/TS relative imports are already paths. TS/Next.js path
+            # aliases ('@/x', '~/x') map to the project root or 'src/', so we
+            # try both roots — this is what makes the JS/TS dependency graph
+            # resolve across a real Next.js app.
+            if edge.to_name.startswith(("@/", "~/")):
+                stem = edge.to_name[2:]
+                bases = [stem, f"src/{stem}", f"app/{stem}"]
+            elif "/" not in edge.to_name:
+                bases = [edge.to_name.replace(".", "/")]
+            else:
+                bases = [edge.to_name]
+            exts = ["", ".py", "/__init__.py", ".js", ".jsx", ".mjs", ".cjs",
+                    ".ts", ".tsx", "/index.js", "/index.ts", "/index.jsx", "/index.tsx"]
+            suffixes = [f"{b}{e}" for b in bases for e in exts]
             for suffix in suffixes:
                 for qn, aid in by_qn.items():
                     if qn == suffix or qn.endswith(f"/{suffix}"):

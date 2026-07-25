@@ -92,13 +92,17 @@ def _label(diff: str) -> str:
     return f"impact: {head}{extra}"
 
 
-async def _run_impact(execution_id: uuid.UUID, version_id: uuid.UUID, diff: str) -> None:
+async def _run_impact(
+    execution_id: uuid.UUID, version_id: uuid.UUID, diff: str, pr_url: str | None = None
+) -> None:
     """Background task: stream analysis phases, then persist the report."""
     factory = get_session_factory()
     emitter = EventEmitter(execution_id)
     try:
         async with factory() as session:
             report = await run_impact_analysis(session, version_id, diff, emitter=emitter)
+        if pr_url:
+            report["pr_url"] = pr_url  # persist the source PR as a first-class field
         async with factory() as session:
             await session.execute(
                 text(
@@ -162,6 +166,7 @@ async def impact_history(
             "risk_level": m.get("risk_level"),
             "confidence": m.get("confidence"),
             "changed_files": m.get("changed_files") or [],
+            "pr_url": m.get("pr_url"),
             "summary": m.get("summary") or r.answer,
             "started_at": r.started_at.isoformat(),
             "finished_at": r.finished_at.isoformat() if r.finished_at else None,
@@ -238,5 +243,5 @@ async def analyze_github_pr(
     )
     await session.commit()
 
-    asyncio.create_task(_run_impact(execution_id, version_id, diff))
+    asyncio.create_task(_run_impact(execution_id, version_id, diff, pr_url=body.pr_url))
     return {"execution_id": str(execution_id), "status": "running"}

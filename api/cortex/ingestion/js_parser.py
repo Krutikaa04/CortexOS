@@ -154,12 +154,21 @@ def resolve_import(from_path: str, spec: str) -> str:
     return spec
 
 
+# A JSX element with a Capitalized tag is a React component reference (a real
+# dependency); lowercase tags are HTML intrinsics and are ignored.
+_JSX_COMPONENT = re.compile(r"<([A-Z][A-Za-z0-9_]*)")
+
+
 def _called_names(body: str) -> list[str]:
+    """Call targets plus referenced React components inside a body — both are
+    'uses' dependencies the graph should carry for cross-file/blast reasoning."""
     names: set[str] = set()
     for m in _CALL.finditer(body):
         name = m.group(1)
         if name not in _CALL_STOPWORDS:
             names.add(name)
+    for m in _JSX_COMPONENT.finditer(body):
+        names.add(m.group(1))  # e.g. <UserCard/> -> depends on UserCard
     return sorted(names)
 
 
