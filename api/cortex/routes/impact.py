@@ -99,8 +99,25 @@ async def _run_impact(
     factory = get_session_factory()
     emitter = EventEmitter(execution_id)
     try:
+        prior_report = None
+        if pr_url:
+            async with factory() as session:
+                row = (
+                    await session.execute(
+                        text(
+                            "SELECT metrics FROM execution "
+                            "WHERE mode = 'impact' AND status = 'succeeded' "
+                            "  AND id <> :id AND metrics->>'pr_url' = :pr "
+                            "ORDER BY started_at DESC LIMIT 1"
+                        ),
+                        {"id": execution_id, "pr": pr_url},
+                    )
+                ).first()
+                prior_report = row.metrics if row else None
         async with factory() as session:
-            report = await run_impact_analysis(session, version_id, diff, emitter=emitter)
+            report = await run_impact_analysis(
+                session, version_id, diff, emitter=emitter, prior_report=prior_report
+            )
         if pr_url:
             report["pr_url"] = pr_url  # persist the source PR as a first-class field
         async with factory() as session:

@@ -23,6 +23,7 @@ from cortex.ingestion.gitfetch import fetch_repository
 from cortex.ingestion.js_parser import JS_EXTENSIONS, parse_js_file
 from cortex.ingestion.markdown_parser import parse_markdown_file
 from cortex.ingestion.python_parser import ParsedEdge, parse_python_file
+from cortex.ingestion.ts_config import build_alias_resolver
 from cortex.jobs import HANDLERS, JobCancelled, checkpoint
 from cortex.models_client import get_model_client
 from cortex.tokens import estimate_tokens
@@ -77,8 +78,9 @@ async def handle_ingest_source(job_id: uuid.UUID, payload: dict[str, Any]) -> No
             await session.commit()
 
         await checkpoint(job_id, stage="linking")
+        alias_resolver = build_alias_resolver(files)
         async with factory() as session:
-            await _link_edges(session, version_id, unresolved_edges, stats)
+            await _link_edges(session, version_id, unresolved_edges, stats, alias_resolver)
             await session.commit()
 
         await _embed_artifacts(job_id, version_id, stats)
@@ -308,7 +310,8 @@ async def _upsert_artifact(
 
 
 async def _link_edges(
-    session: AsyncSession, version_id: uuid.UUID, unresolved: list[ParsedEdge], stats: dict
+    session: AsyncSession, version_id: uuid.UUID, unresolved: list[ParsedEdge], stats: dict,
+    alias_resolver=None,
 ) -> None:
     """LINK: resolve symbol names to artifact ids within this version.
 
@@ -347,10 +350,16 @@ async def _link_edges(
             # ('react', 'os') simply matches nothing and stays unresolved.
             # Base candidate paths to try. Python dotted names become slash
             # paths; JS/TS relative imports are already paths. TS/Next.js path
-            # aliases ('@/x', '~/x') map to the project root or 'src/', so we
-            # try both roots — this is what makes the JS/TS dependency graph
-            # resolve across a real Next.js app.
-            if edge.to_name.startswith(("@/", "~/")):
+            # aliases resolve precisely through tsconfig/jsconfig baseUrl+paths
+            # (build_alias_resolver), which is what makes the JS/TS dependency
+            # graph accurate across real Next.js apps and monorepos.
+            alias_bases: list[str] = []
+            if alias_resolver is not None and alias_resolver.active:
+                alias_bases = alias_resolver.resolve(edge.from_qualified_name, edge.to_name)
+            if alias_bases:
+                bases = alias_bases
+            elif edge.to_name.startswith(("@/", "~/")):
+                # fallback when no tsconfig declared the alias
                 stem = edge.to_name[2:]
                 bases = [stem, f"src/{stem}", f"app/{stem}"]
             elif "/" not in edge.to_name:

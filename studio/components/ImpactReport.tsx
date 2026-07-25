@@ -1,10 +1,29 @@
 "use client";
 
-import type { ImpactArtifact, ImpactReport as Report } from "@/lib/types";
+import type {
+  DependencyChain,
+  DimensionEntry,
+  ImpactArtifact,
+  ImpactReport as Report,
+  RevisionComparison,
+} from "@/lib/types";
 import { BlastRadius } from "./BlastRadius";
 import { CodeBlock, CopyButton } from "./CodeBlock";
 import { TokenReduction } from "./TokenReduction";
 import { IconFile } from "./icons";
+
+const DIMENSION_LABEL: Record<string, string> = {
+  architectural: "Architectural",
+  api: "API",
+  database: "Database",
+  configuration: "Configuration",
+  frontend: "Frontend",
+  background_worker: "Background worker",
+  external_service: "External service",
+  authentication: "Authentication",
+  caching: "Caching",
+  dependency: "Dependency",
+};
 
 const RISK_STYLE = {
   HIGH: { bar: "border-signal-red/50 bg-signal-red/10", text: "text-signal-red", dot: "bg-signal-red" },
@@ -20,8 +39,14 @@ export function ImpactReport({
   onOpenFile: (qn: string) => void;
 }) {
   const s = RISK_STYLE[report.risk_level];
+  const dims = report.impact_dimensions ?? {};
+  const dimKeys = Object.keys(dims).filter((k) => dims[k].length > 0);
   return (
     <div className="animate-fade-up space-y-5">
+      {report.revision_comparison && (
+        <RevisionBanner cmp={report.revision_comparison} />
+      )}
+
       {/* risk banner */}
       <div className={`rounded-xl border p-5 ${s.bar}`}>
         <div className="flex items-center justify-between">
@@ -56,6 +81,34 @@ export function ImpactReport({
             </li>
           ))}
         </ul>
+
+        {report.confidence_explanation && (
+          <div className="mt-4 border-t border-ink-800/60 pt-3">
+            <div className="mb-1.5 text-[10px] uppercase tracking-wider text-ink-500">
+              Confidence · {report.confidence_explanation.level}
+            </div>
+            <ul className="space-y-1">
+              {report.confidence_explanation.factors.map((f, i) => (
+                <li key={i} className="flex items-start gap-2 text-[12.5px] text-ink-300">
+                  <span
+                    className={
+                      f.effect === "raises"
+                        ? "text-signal-green"
+                        : f.effect === "lowers"
+                          ? "text-signal-red"
+                          : "text-ink-600"
+                    }
+                  >
+                    {f.effect === "raises" ? "▲" : f.effect === "lowers" ? "▼" : "•"}
+                  </span>
+                  <span>
+                    <span className="text-ink-200">{f.signal}</span> — {f.detail}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
       </div>
 
       <div className="grid grid-cols-1 gap-5 lg:grid-cols-[1fr_320px]">
@@ -75,6 +128,56 @@ export function ImpactReport({
             onOpenFile={onOpenFile}
             tone="text-signal-blue"
           />
+
+          {report.architecture_note && (
+            <Section title="Architecture impact">
+              <p className="text-sm text-ink-200">{report.architecture_note}</p>
+            </Section>
+          )}
+
+          {dimKeys.length > 0 && (
+            <Section
+              title="Impact by dimension"
+              subtitle="every affected component, and why it appears"
+            >
+              <div className="space-y-3">
+                {dimKeys.map((k) => (
+                  <DimensionGroup
+                    key={k}
+                    label={DIMENSION_LABEL[k] ?? k}
+                    entries={dims[k]}
+                    onOpenFile={onOpenFile}
+                  />
+                ))}
+              </div>
+            </Section>
+          )}
+
+          {report.dependency_chains && report.dependency_chains.length > 0 && (
+            <Section title="Evidence — dependency chains" subtitle="how the change reaches each dependent">
+              <ul className="space-y-1.5">
+                {report.dependency_chains.slice(0, 12).map((c, i) => (
+                  <ChainRow key={i} chain={c} />
+                ))}
+              </ul>
+            </Section>
+          )}
+
+          {report.follow_ups && report.follow_ups.length > 0 && (
+            <Section title="Suggested follow-up changes">
+              <ul className="space-y-2">
+                {report.follow_ups.map((f, i) => (
+                  <li key={i} className="text-sm">
+                    <div className="flex gap-2 text-ink-100">
+                      <span className="text-signal-blue">→</span>
+                      {f.action}
+                    </div>
+                    <div className="ml-5 text-[12px] text-ink-500">{f.why}</div>
+                  </li>
+                ))}
+              </ul>
+            </Section>
+          )}
 
           {report.problems.length > 0 && (
             <Section title="Potential problems">
@@ -213,6 +316,91 @@ function Metric({ label, value }: { label: string; value: React.ReactNode }) {
   );
 }
 
+function RevisionBanner({ cmp }: { cmp: RevisionComparison }) {
+  const trendStyle =
+    cmp.risk_trend === "increased"
+      ? "text-signal-red"
+      : cmp.risk_trend === "decreased"
+        ? "text-signal-green"
+        : "text-ink-300";
+  const arrow =
+    cmp.risk_trend === "increased" ? "↑" : cmp.risk_trend === "decreased" ? "↓" : "→";
+  return (
+    <div className="rounded-xl border border-signal-blue/30 bg-signal-blue/5 p-4">
+      <div className="flex items-center gap-2">
+        <span className="badge bg-signal-blue/15 text-signal-blue">revision comparison</span>
+        <span className={`text-sm font-semibold ${trendStyle}`}>
+          Risk {arrow} {cmp.previous_risk_level} → {cmp.current_risk_level} ({cmp.risk_trend})
+        </span>
+      </div>
+      <div className="mt-2 flex flex-wrap gap-x-6 gap-y-1 text-[12.5px] text-ink-300">
+        <span>
+          Blast radius {cmp.previous_blast_radius} → {cmp.current_blast_radius}{" "}
+          <span className={cmp.blast_radius_delta > 0 ? "text-signal-red" : cmp.blast_radius_delta < 0 ? "text-signal-green" : "text-ink-500"}>
+            ({cmp.blast_radius_delta >= 0 ? "+" : ""}{cmp.blast_radius_delta})
+          </span>
+        </span>
+        <span>
+          Confidence {cmp.confidence_delta >= 0 ? "+" : ""}
+          {cmp.confidence_delta}%
+        </span>
+      </div>
+      {cmp.new_risks.length > 0 && (
+        <div className="mt-2 text-[12.5px]">
+          <span className="text-signal-red">New risks:</span>{" "}
+          <span className="text-ink-300">{cmp.new_risks.join("; ")}</span>
+        </div>
+      )}
+      {cmp.resolved_risks.length > 0 && (
+        <div className="mt-1 text-[12.5px]">
+          <span className="text-signal-green">Resolved:</span>{" "}
+          <span className="text-ink-300">{cmp.resolved_risks.join("; ")}</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DimensionGroup({
+  label,
+  entries,
+  onOpenFile,
+}: {
+  label: string;
+  entries: DimensionEntry[];
+  onOpenFile: (qn: string) => void;
+}) {
+  return (
+    <div>
+      <div className="mb-1 flex items-center gap-2">
+        <span className="badge bg-ink-800 text-ink-200">{label}</span>
+        <span className="text-[11px] text-ink-500">{entries[0]?.reason}</span>
+      </div>
+      <div className="flex flex-wrap gap-1.5">
+        {entries.map((e, i) => (
+          <button
+            key={`${e.symbol}-${i}`}
+            onClick={() => onOpenFile(`${e.path}::${e.symbol}`)}
+            title={`${e.path} · ${e.hop}${e.edge_kind ? ` · ${e.edge_kind}` : ""}`}
+            className="chip font-mono hover:border-ink-600"
+          >
+            {e.symbol}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ChainRow({ chain }: { chain: DependencyChain }) {
+  return (
+    <li className="rounded-lg border border-ink-800 bg-ink-900/40 px-2.5 py-1.5">
+      <div className="font-mono text-[11.5px] text-ink-200">{chain.chain}</div>
+      <div className="font-mono text-[10px] text-ink-600">{chain.path}</div>
+    </li>
+  );
+}
+
 function buildPrComment(r: Report): string {
   const L = [`## 🛡️ CortexOS Change Impact Guard — ${r.risk_level} RISK (${r.confidence}% confidence)`];
   if (r.summary) L.push("", r.summary);
@@ -223,10 +411,20 @@ function buildPrComment(r: Report): string {
   if (r.indirect_impact.length)
     L.push(`**Indirect impact (${r.indirect_impact.length}):** ` +
       r.indirect_impact.slice(0, 10).map((a) => `\`${a.symbol}\``).join(", "));
+  if (r.revision_comparison) {
+    const c = r.revision_comparison;
+    L.push("", `**Since last analysis:** risk ${c.risk_trend} (${c.previous_risk_level} → ${c.current_risk_level}), ` +
+      `blast radius ${c.blast_radius_delta >= 0 ? "+" : ""}${c.blast_radius_delta}`);
+    if (c.new_risks.length) L.push(`- New risks: ${c.new_risks.join("; ")}`);
+    if (c.resolved_risks.length) L.push(`- Resolved: ${c.resolved_risks.join("; ")}`);
+  }
+  if (r.architecture_note) L.push("", "**Architecture impact:** " + r.architecture_note);
   if (r.problems.length)
     L.push("", "**Potential problems:**", ...r.problems.map((p) => `- ${p}`));
   if (r.recommended_tests.length)
     L.push("", "**Recommended tests:** " + r.recommended_tests.map((t) => `\`${t}\``).join(", "));
+  if (r.follow_ups && r.follow_ups.length)
+    L.push("", "**Follow-up changes:**", ...r.follow_ups.map((f) => `- ${f.action}`));
   if (r.suggested_patch) L.push("", "**Suggested patch:**", "```", r.suggested_patch, "```");
   const m = r.metrics;
   L.push(

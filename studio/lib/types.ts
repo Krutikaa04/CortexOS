@@ -164,22 +164,74 @@ export interface ImpactArtifact {
   hop: string;
 }
 
+export interface ConfidenceFactor {
+  signal: string;
+  detail: string;
+  effect: "raises" | "lowers" | "neutral";
+}
+
+export interface ConfidenceExplanation {
+  score: number;
+  level: "High" | "Medium" | "Low";
+  factors: ConfidenceFactor[];
+}
+
+export interface DimensionEntry {
+  symbol: string;
+  path: string;
+  hop: string;
+  edge_kind: string | null;
+  reason: string;
+}
+
+export interface DependencyChain {
+  target: string;
+  path: string;
+  edge_kind: string | null;
+  chain: string;
+  why: string;
+}
+
+export interface FollowUp {
+  action: string;
+  why: string;
+}
+
+export interface RevisionComparison {
+  previous_risk_level: string;
+  current_risk_level: string;
+  risk_trend: "increased" | "decreased" | "unchanged";
+  new_risks: string[];
+  resolved_risks: string[];
+  blast_radius_delta: number;
+  previous_blast_radius: number;
+  current_blast_radius: number;
+  confidence_delta: number;
+}
+
 export interface ImpactReport {
   risk_level: "HIGH" | "MEDIUM" | "LOW";
   risk_reasons: string[];
   confidence: number;
+  confidence_explanation?: ConfidenceExplanation;
   sensitivity: string[];
   changed_files: string[];
   changed_artifacts: ImpactArtifact[];
   direct_impact: ImpactArtifact[];
   indirect_impact: ImpactArtifact[];
+  impact_dimensions?: Record<string, DimensionEntry[]>;
+  dependency_chains?: DependencyChain[];
+  architecture_note?: string;
   problems: string[];
   recommended_tests: string[];
+  follow_ups?: FollowUp[];
   suggested_patch: string;
   summary: string;
   narrative_raw: string;
+  pr_url?: string | null;
   metrics: ExecutionMetrics & { model_calls?: number };
   evidence_grounded: boolean;
+  revision_comparison?: RevisionComparison;
 }
 
 export interface ChatSession {
