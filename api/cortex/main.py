@@ -16,6 +16,7 @@ from cortex.routes.benchmarks import router as benchmarks_router
 from cortex.routes.executions import router as executions_router
 from cortex.routes.graph import router as graph_router
 from cortex.routes.impact import router as impact_router
+from cortex.routes.insights import router as insights_router
 from cortex.routes.jobs import router as jobs_router
 from cortex.routes.sessions import router as sessions_router
 from cortex.routes.sources import router as sources_router
@@ -72,6 +73,7 @@ app.include_router(executions_router)
 app.include_router(benchmarks_router)
 app.include_router(jobs_router)
 app.include_router(sessions_router)
+app.include_router(insights_router)
 
 _settings = get_settings()
 # Production must name its allowed browser origins (the Vercel Studio URL);

@@ -52,3 +52,24 @@ class ModelProvider(abc.ABC):
         self, texts: list[str], *, model: str | None = None
     ) -> list[list[float]]:
         """Embed a batch; result order matches input order."""
+
+    async def generate_stream(
+        self,
+        prompt: str,
+        *,
+        model: str | None = None,
+        system: str | None = None,
+        temperature: float = 0.0,
+        max_tokens: int = 1024,
+    ):
+        """Async iterator of dicts. Token deltas ``{"type":"token","text":…}``
+        followed by a terminal ``{"type":"done", ...token counts/duration}``.
+
+        Default: fall back to a single buffered generate for providers that do
+        not stream, so callers can always consume the same shape."""
+        result = await self.generate(
+            prompt, model=model, system=system,
+            temperature=temperature, max_tokens=max_tokens,
+        )
+        yield {"type": "token", "text": result["text"]}
+        yield {"type": "done", **{k: v for k, v in result.items() if k != "text"}}

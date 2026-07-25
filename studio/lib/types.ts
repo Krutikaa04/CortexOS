@@ -234,6 +234,44 @@ export interface ImpactReport {
   revision_comparison?: RevisionComparison;
 }
 
+// --- Engineering intelligence (deterministic graph analyses) ---
+
+export interface DeadCodeItem {
+  qualified_name: string;
+  symbol: string;
+  path: string;
+  kind: string;
+  evidence: string;
+}
+
+export interface CycleItem {
+  files: string[];
+  length: number;
+  risk: "HIGH" | "MEDIUM";
+  impact: string;
+  resolution: string;
+}
+
+export interface InsightsOverview {
+  large_modules: { path: string; tokens: number; artifacts: number; evidence: string }[];
+  high_coupling: { path: string; coupling: number; fan_in: number; fan_out: number; evidence: string }[];
+  hotspots: { qualified_name: string; symbol: string; path: string; references: number; evidence: string }[];
+  layers: { layer: string; files: number }[];
+  totals: { files: number; artifacts: number; dependencies: number };
+}
+
+export interface FlowLevel {
+  depth: number;
+  nodes: { qualified_name: string; symbol: string; path: string; edge_kind: string }[];
+}
+
+export interface FlowReport {
+  start: string;
+  found: boolean;
+  start_symbol?: string;
+  levels: FlowLevel[];
+}
+
 export interface ChatSession {
   id: string;
   title: string;

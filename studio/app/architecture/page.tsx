@@ -3,7 +3,12 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "@/lib/api";
 import { useRepo } from "@/lib/repo-context";
-import type { Architecture } from "@/lib/types";
+import type {
+  Architecture,
+  CycleItem,
+  DeadCodeItem,
+  InsightsOverview,
+} from "@/lib/types";
 import { ForceGraph, type FGNode } from "@/components/ForceGraph";
 import { IconSpinner } from "@/components/icons";
 
@@ -168,8 +173,134 @@ export default function ArchitecturePage() {
             </div>
           )
         )}
+
+        {versionId && <EngineeringIntelligence versionId={versionId} />}
       </div>
     </div>
+  );
+}
+
+function EngineeringIntelligence({ versionId }: { versionId: string }) {
+  const [overview, setOverview] = useState<InsightsOverview | null>(null);
+  const [dead, setDead] = useState<DeadCodeItem[] | null>(null);
+  const [cycles, setCycles] = useState<CycleItem[] | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    setBusy(true);
+    Promise.allSettled([
+      api.insightsOverview(versionId),
+      api.deadCode(versionId),
+      api.cycles(versionId),
+    ]).then(([o, d, c]) => {
+      if (!active) return;
+      if (o.status === "fulfilled") setOverview(o.value);
+      if (d.status === "fulfilled") setDead(d.value.items);
+      if (c.status === "fulfilled") setCycles(c.value.cycles);
+      setBusy(false);
+    });
+    return () => {
+      active = false;
+    };
+  }, [versionId]);
+
+  return (
+    <section className="mt-8">
+      <h2 className="text-lg font-semibold text-ink-100">Engineering intelligence</h2>
+      <p className="mt-1 text-sm text-ink-400">
+        Deterministic analyses over the repository graph — every finding carries its evidence.
+      </p>
+      {busy && !overview ? (
+        <div className="panel mt-3 flex h-32 items-center justify-center text-sm text-ink-500">
+          <IconSpinner /> <span className="ml-2">Analyzing graph…</span>
+        </div>
+      ) : (
+        <div className="mt-3 grid grid-cols-1 gap-4 lg:grid-cols-2">
+          {overview && (
+            <div className="panel p-4">
+              <div className="stat-label">Architecture layers</div>
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {overview.layers.map((l) => (
+                  <span key={l.layer} className="chip">
+                    {l.layer.replace(/_/g, " ")} · {l.files}
+                  </span>
+                ))}
+              </div>
+              <div className="mt-4 stat-label">Hotspots (most referenced)</div>
+              <ul className="mt-2 space-y-1">
+                {overview.hotspots.slice(0, 6).map((h) => (
+                  <li key={h.qualified_name} className="flex justify-between gap-2 text-[13px]">
+                    <span className="truncate font-mono text-ink-200">{h.symbol}</span>
+                    <span className="shrink-0 text-ink-500">{h.references} refs</span>
+                  </li>
+                ))}
+                {overview.hotspots.length === 0 && (
+                  <li className="text-[13px] text-ink-500">No references recorded.</li>
+                )}
+              </ul>
+              <div className="mt-4 stat-label">High coupling</div>
+              <ul className="mt-2 space-y-1">
+                {overview.high_coupling.slice(0, 5).map((f) => (
+                  <li key={f.path} className="flex justify-between gap-2 text-[12.5px]">
+                    <span className="truncate font-mono text-ink-300">{f.path}</span>
+                    <span className="shrink-0 text-ink-500" title={f.evidence}>
+                      {f.coupling}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          <div className="space-y-4">
+            <div className="panel p-4">
+              <div className="flex items-center justify-between">
+                <div className="stat-label">Circular dependencies</div>
+                <span className="badge bg-ink-800 text-ink-300">{cycles?.length ?? 0}</span>
+              </div>
+              {cycles && cycles.length > 0 ? (
+                <ul className="mt-2 space-y-2">
+                  {cycles.slice(0, 5).map((c, i) => (
+                    <li key={i} className="rounded-lg border border-signal-red/20 bg-signal-red/5 p-2">
+                      <div className="font-mono text-[11.5px] text-ink-200">
+                        {c.files.map((f) => f.split("/").pop()).join(" → ")} → …
+                      </div>
+                      <div className="mt-1 text-[11px] text-ink-500">{c.resolution}</div>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <div className="mt-2 text-[13px] text-signal-green">No dependency cycles found.</div>
+              )}
+            </div>
+
+            <div className="panel p-4">
+              <div className="flex items-center justify-between">
+                <div className="stat-label">Potential dead code</div>
+                <span className="badge bg-ink-800 text-ink-300">{dead?.length ?? 0}</span>
+              </div>
+              {dead && dead.length > 0 ? (
+                <ul className="mt-2 space-y-1">
+                  {dead.slice(0, 8).map((d) => (
+                    <li key={d.qualified_name} className="flex justify-between gap-2 text-[12.5px]">
+                      <span className="truncate font-mono text-ink-200" title={d.evidence}>
+                        {d.symbol}
+                      </span>
+                      <span className="shrink-0 font-mono text-[10px] text-ink-600">{d.path}</span>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <div className="mt-2 text-[13px] text-ink-400">
+                  No unreferenced functions/classes detected.
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+    </section>
   );
 }
 

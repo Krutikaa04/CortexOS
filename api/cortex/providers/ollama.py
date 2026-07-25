@@ -111,3 +111,48 @@ class OllamaProvider(ModelProvider):
         payload = {"model": model or self._embed_model, "input": texts}
         data = await self._post("/api/embed", payload, self._embed_timeout)
         return data.get("embeddings", [])
+
+    async def generate_stream(
+        self,
+        prompt: str,
+        *,
+        model: str | None = None,
+        system: str | None = None,
+        temperature: float = 0.0,
+        max_tokens: int = 1024,
+    ):
+        """Stream token deltas from Ollama (stream=True, NDJSON), then a
+        terminal frame with the runtime's real token counts."""
+        import json
+
+        payload: dict = {
+            "model": model or self._task_model,
+            "prompt": prompt,
+            "stream": True,
+            "options": {"temperature": temperature, "num_predict": max_tokens},
+        }
+        if system:
+            payload["system"] = system
+        try:
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(self._generate_timeout, connect=self._connect_timeout)
+            ) as client:
+                async with client.stream(
+                    "POST", f"{self._base_url}/api/generate", json=payload
+                ) as resp:
+                    resp.raise_for_status()
+                    async for line in resp.aiter_lines():
+                        if not line.strip():
+                            continue
+                        data = json.loads(line)
+                        if data.get("response"):
+                            yield {"type": "token", "text": data["response"]}
+                        if data.get("done"):
+                            yield {
+                                "type": "done",
+                                "input_tokens": data.get("prompt_eval_count", 0),
+                                "output_tokens": data.get("eval_count", 0),
+                                "duration_ms": data.get("total_duration", 0) // 1_000_000,
+                            }
+        except httpx.HTTPError as exc:
+            raise ModelUnavailableError(f"streaming generation failed: {exc}") from exc

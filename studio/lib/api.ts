@@ -9,7 +9,11 @@ import type {
   BenchmarkSummary,
   ChatMessage,
   ChatSession,
+  CycleItem,
+  DeadCodeItem,
   Execution,
+  FlowReport,
+  InsightsOverview,
   ExecutionEvent,
   HealthStatus,
   ImpactHistoryEntry,
@@ -124,4 +128,16 @@ export const api = {
     send<{ id: string; title: string }>("PATCH", `/v1/sessions/${sessionId}`, { title }),
   deleteSession: (sessionId: string) =>
     send<void>("DELETE", `/v1/sessions/${sessionId}`),
+
+  // --- Engineering intelligence (deterministic graph analyses) ---
+  deadCode: (versionId: string) =>
+    get<{ count: number; items: DeadCodeItem[] }>(`/v1/sources/${versionId}/insights/dead-code`),
+  cycles: (versionId: string) =>
+    get<{ count: number; cycles: CycleItem[] }>(`/v1/sources/${versionId}/insights/cycles`),
+  insightsOverview: (versionId: string) =>
+    get<InsightsOverview>(`/v1/sources/${versionId}/insights/overview`),
+  flow: (versionId: string, qualifiedName: string) =>
+    get<FlowReport>(
+      `/v1/sources/${versionId}/insights/flow?qualified_name=${encodeURIComponent(qualifiedName)}`,
+    ),
 };
