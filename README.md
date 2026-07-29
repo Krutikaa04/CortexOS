@@ -116,4 +116,38 @@ api/        FastAPI control plane + worker (Python)
   cortex/ingestion/  repository → semantic artifacts + edges + embeddings
 studio/     CortexOS Studio frontend (Next.js)
 infra/      container entrypoints and infra scripts
+.github/workflows/ci.yml   lint · type-check · tests · builds · docker
+render.yaml               production blueprint (Render web + worker + Postgres)
 ```
+
+## Production deployment
+
+The same codebase runs locally (Docker) and in the cloud — only configuration
+differs. Frontend → Vercel; API + worker → Render (or any container host);
+database → any managed PostgreSQL with `pgvector`.
+
+- **Config:** every host/URL is env-driven (`CORTEX_*`, see `.env.example`).
+  `CORTEX_DB_URL` accepts a managed `postgres://…?sslmode=require` string (the
+  scheme is normalized and TLS applied automatically). `CORTEX_ENV=production`
+  tightens CORS and DB-TLS defaults.
+- **Security:** set `CORTEX_ALLOWED_ORIGINS` to the exact Studio origin(s).
+  Set `CORTEX_API_TOKEN` to require `Authorization: Bearer <token>` on all
+  non-health endpoints (empty = open, for local dev). Repository URIs are
+  validated before reaching git (no argument injection, no `file://`, no local
+  paths in production). `CORTEX_GIT_TOKEN` enables private-repo cloning.
+- **Health:** `/health/live` (liveness, dependency-free) and `/health`
+  (readiness — database, worker, queue depth, model provider, repository
+  indexer, version).
+- **CI:** `.github/workflows/ci.yml` runs ruff, pytest, `tsc`, `next build`,
+  and a backend Docker build on every push/PR.
+
+## Troubleshooting
+
+- `/health` returns `503 unavailable` → the database is unreachable; check
+  `CORTEX_DB_URL` and TLS (`CORTEX_DB_SSL`).
+- `worker: none/stale` in `/health` → the worker isn't running or can't reach
+  the DB/model; it must reach `CORTEX_MODEL_BASE_URL`.
+- `models: unreachable` → the model provider (Ollama endpoint) is down or the
+  base URL is wrong.
+- Ingestion rejected with 422 → the repository URI failed validation (in
+  production only remote git URIs are allowed).

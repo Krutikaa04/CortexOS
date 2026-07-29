@@ -10,6 +10,7 @@ comparison is direct.
 
 import dataclasses
 import logging
+import re as _re
 import time
 import uuid
 from typing import Any
@@ -47,8 +48,6 @@ ANSWER:"""
 # assembled prompt (and therefore the benchmark) is byte-identical to before;
 # "debug" and "generate" ask the model for the structured output the product
 # needs. Detection is deterministic keyword matching — no extra model call.
-import re as _re
-
 # Note: "breaks" is intentionally excluded — "what breaks if X changes" is a
 # change-impact question, not a bug report, and must stay on the explain path.
 _DEBUG_MARKERS = _re.compile(

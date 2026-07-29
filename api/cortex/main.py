@@ -1,9 +1,10 @@
 """CortexOS control plane (FastAPI)."""
 
 import logging
+import time
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
@@ -12,6 +13,7 @@ from cortex import __version__
 from cortex.config import get_settings
 from cortex.db import dispose_engine, get_session_factory
 from cortex.models_client import ModelUnavailableError, get_model_client
+from cortex.security import check_api_token
 from cortex.routes.benchmarks import router as benchmarks_router
 from cortex.routes.executions import router as executions_router
 from cortex.routes.graph import router as graph_router
@@ -75,6 +77,33 @@ app.include_router(jobs_router)
 app.include_router(sessions_router)
 app.include_router(insights_router)
 
+
+# Ops middleware (registered BEFORE CORS so CORS stays the outermost layer and
+# even a 401 carries CORS headers). Enforces bearer auth only when
+# CORTEX_API_TOKEN is configured, and emits one structured access log per
+# request — health probes are excluded to keep logs signal, not noise.
+@app.middleware("http")
+async def _ops_middleware(request: Request, call_next):
+    path = request.url.path
+    is_health = path.startswith("/health")
+    if request.method != "OPTIONS" and not is_health:
+        if not check_api_token(request.headers.get("authorization")):
+            return JSONResponse(status_code=401, content={"detail": "unauthorized"})
+    start = time.monotonic()
+    try:
+        response = await call_next(request)
+    except Exception:
+        log.exception("request failed method=%s path=%s", request.method, path)
+        raise
+    duration_ms = int((time.monotonic() - start) * 1000)
+    if not is_health:
+        log.info(
+            "request method=%s path=%s status=%d duration_ms=%d",
+            request.method, path, response.status_code, duration_ms,
+        )
+    return response
+
+
 _settings = get_settings()
 # Production must name its allowed browser origins (the Vercel Studio URL);
 # empty in production means same-origin only. In dev, reflect any origin.
@@ -110,7 +139,6 @@ async def health() -> JSONResponse:
     platform's startup probe is not deadlocked on a multi-GB model pull); 503
     "unavailable" when the database is unreachable (nothing can be served).
     """
-    settings = get_settings()
     checks: dict[str, str] = {"api": "ok"}
 
     try:
@@ -121,6 +149,15 @@ async def health() -> JSONResponse:
                     text(
                         "SELECT kinds, extract(epoch from (now() - last_seen)) AS age "
                         "FROM worker_heartbeat ORDER BY last_seen DESC LIMIT 1"
+                    )
+                )
+            ).first()
+            queue_row = (
+                await session.execute(
+                    text(
+                        "SELECT count(*) FILTER (WHERE status = 'queued') AS queued, "
+                        "  count(*) FILTER (WHERE status IN ('running','waiting_model')) AS running "
+                        "FROM job"
                     )
                 )
             ).first()
@@ -143,6 +180,9 @@ async def health() -> JSONResponse:
     else:
         checks["worker"] = f"stale ({int(worker_row.age)}s)"
         checks["repository_indexer"] = "unavailable"
+
+    # job queue depth
+    checks["queue"] = f"{queue_row.queued} queued, {queue_row.running} running"
 
     # model provider
     provider = get_model_client()

@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from cortex.db import get_session
 from cortex.jobs import enqueue
+from cortex.security import ValidationError, validate_git_ref, validate_repo_uri
 
 router = APIRouter(prefix="/v1/sources", tags=["sources"])
 
@@ -21,10 +22,19 @@ class CreateSourceRequest(BaseModel):
 
 @router.post("", status_code=202)
 async def create_source(body: CreateSourceRequest) -> dict:
-    """Queue ingestion of a Git repository (remote URL or local path)."""
+    """Queue ingestion of a Git repository (remote URL, or local path in dev).
+
+    The URI/ref are validated before they can reach the git subprocess —
+    blocking argument injection, file:// disclosure and (in production) local
+    filesystem paths."""
+    try:
+        uri = validate_repo_uri(body.uri)
+        ref = validate_git_ref(body.ref)
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
     job_id = await enqueue(
         "ingest_source",
-        {"uri": body.uri, "ref": body.ref, "display_name": body.display_name},
+        {"uri": uri, "ref": ref, "display_name": body.display_name},
     )
     return {"job_id": str(job_id), "status": "queued"}
 
