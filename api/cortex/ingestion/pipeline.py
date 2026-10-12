@@ -59,7 +59,8 @@ async def handle_ingest_source(job_id: uuid.UUID, payload: dict[str, Any]) -> No
     factory = get_session_factory()
 
     async with factory() as session:
-        source_id = await _upsert_source(session, uri, payload.get("display_name"))
+        owner = payload.get("owner_id") or "local"
+        source_id = await _upsert_source(session, uri, payload.get("display_name"), owner)
         version_id = await _get_or_create_version(session, source_id, commit_sha)
         await session.commit()
 
@@ -149,19 +150,22 @@ HANDLERS["ingest_source"] = handle_ingest_source
 # ---------------------------------------------------------------------------
 
 
-async def _upsert_source(session: AsyncSession, uri: str, display_name: str | None) -> uuid.UUID:
+async def _upsert_source(
+    session: AsyncSession, uri: str, display_name: str | None, owner: str = "local"
+) -> uuid.UUID:
     row = (
-        await session.execute(text("SELECT id FROM source WHERE uri = :uri"), {"uri": uri})
+        await session.execute(text("SELECT id FROM source WHERE uri = :uri AND owner_id = :owner"),
+            {"uri": uri, "owner": owner},)
     ).first()
     if row:
         return row.id
     source_id = uuid.uuid4()
     await session.execute(
         text(
-            "INSERT INTO source (id, kind, uri, display_name) "
-            "VALUES (:id, 'git_repo', :uri, :name)"
+            "INSERT INTO source (id, kind, uri, display_name, owner_id) "
+            "VALUES (:id, 'git_repo', :uri, :name, :owner)"
         ),
-        {"id": source_id, "uri": uri, "name": display_name or uri.rstrip("/").split("/")[-1]},
+        {"id": source_id, "uri": uri, "name": display_name or uri.rstrip("/").split("/")[-1], "owner": owner},
     )
     return source_id
 
@@ -334,7 +338,7 @@ async def _link_edges(
     for r in rows:
         if "::" in r.qualified_name:
             symbol = r.qualified_name.split("::", 1)[1].split(".")[-1]
-            by_symbol.setdefault(symbol, []).append(r.id)
+            by_symbol.setdefault(symbol, []).append((r.id, r.qualified_name))
 
     for edge in unresolved:
         from_id = by_qn.get(edge.from_qualified_name)
@@ -379,12 +383,13 @@ async def _link_edges(
                     break
         else:  # calls / inherits
             symbol = edge.to_name.split(".")[-1]
-            candidates = by_symbol.get(symbol, [])
+            candidates = _disambiguate(
+                by_symbol.get(symbol, []), edge.from_qualified_name)
             if len(candidates) == 1:
-                to_id = candidates[0]
+                to_id = candidates[0][0]
             elif len(candidates) > 1:
-                confidence = 0.5
-                to_id = candidates[0]
+                confidence = 0.5  # still ambiguous: kept, but flagged low-confidence
+                to_id = candidates[0][0]
 
         if to_id is None or to_id == from_id:
             continue
@@ -428,6 +433,25 @@ async def _build_knowledge_graph(
     except graphstore.GraphUnavailable as exc:
         raise RuntimeError(f"Knowledge graph build failed (Neo4j): {exc}") from exc
     log.info("knowledge graph built: %s", stats["graph"])
+
+
+def _disambiguate(candidates: list, from_qn: str) -> list:
+    """Narrow same-named symbols with evidence we actually have: the caller's
+    own file first, then non-test code when the caller is not itself a test.
+    Returns the original list when evidence does not single one out."""
+    if len(candidates) <= 1:
+        return candidates
+    from cortex.graphstore import is_test_path
+
+    src_file = from_qn.split("::", 1)[0]
+    same = [c for c in candidates if c[1].split("::", 1)[0] == src_file]
+    if len(same) == 1:
+        return same
+    if not is_test_path(src_file):
+        prod = [c for c in candidates if not is_test_path(c[1].split("::", 1)[0])]
+        if len(prod) == 1:
+            return prod
+    return candidates
 
 
 async def _embed_artifacts(job_id: uuid.UUID, version_id: uuid.UUID, stats: dict) -> None:

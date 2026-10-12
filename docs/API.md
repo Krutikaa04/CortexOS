@@ -12,8 +12,33 @@ every endpoint except `/health*` requires:
 Authorization: Bearer <CORTEX_API_TOKEN>
 ```
 
-Missing/incorrect token → `401 {"detail": "unauthorized"}`. When the variable
-is empty (local dev), the API is open.
+Missing/incorrect token → `401 {"detail": "unauthorized"}`. When no token is
+configured (local dev), the API is open and every request is the `local` user.
+
+**Accounts.** `POST /v1/auth/register` and `POST /v1/auth/login`
+(`{email, password, display_name?}`) return `{token, user}`; send the token as
+`Authorization: Bearer <token>`. `POST /v1/auth/logout` revokes it and
+`GET /v1/auth/me` returns the signed-in account. Passwords are scrypt-hashed
+(8-256 chars); only the SHA-256 of a session token is stored; sessions last
+`CORTEX_SESSION_DAYS`; 8 failed logins per email or client in 15 minutes
+returns `429`. Everything a user creates is owned by their account id and
+invisible to every other account. Set `CORTEX_AUTH_REQUIRED=true` to refuse
+anonymous access, and `CORTEX_REGISTRATION_OPEN=false` for invite-only.
+`CORTEX_LOCAL_OWNER_EMAIL` names the account that adopts repositories
+ingested before accounts existed.
+
+**Per-user tokens.** `CORTEX_API_TOKENS="alice:tokA,bob:tokB"` maps each token to
+a user. Repositories belong to the user who added them; versions, executions,
+chat sessions, jobs, benchmarks and the graph are visible only to that owner.
+Anything not yours returns `404` (existence is not disclosed). The legacy
+`CORTEX_API_TOKEN` maps to the `local` user, which also owns every repository
+ingested before ownership existed. The same repo URL added by two users becomes
+two independent sources and graphs.
+
+**SSE stream.** `EventSource` cannot send headers, so
+`POST /v1/executions/{id}/stream-ticket` (authenticated, ownership-checked)
+returns a 2-minute ticket bound to that execution, used as
+`GET /v1/executions/{id}/stream?ticket=...`. The token itself never goes in a URL.
 
 ## Conventions
 

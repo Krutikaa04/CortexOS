@@ -20,13 +20,14 @@ from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from cortex.access import guard
 from cortex.db import get_session, get_session_factory
 from cortex.events import EventEmitter, EventType
 from cortex.kernel.impact import run_impact_analysis
 
 log = logging.getLogger("cortex.impact")
 
-router = APIRouter(prefix="/v1/sources", tags=["impact"])
+router = APIRouter(prefix="/v1/sources", tags=["impact"], dependencies=[Depends(guard)])
 
 # github.com/<owner>/<repo>/pull/<n>  (also tolerates trailing /files, .diff, etc.)
 _PR_URL = re.compile(

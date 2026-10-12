@@ -45,6 +45,17 @@ _CODE_LANGS = ("python", "javascript")
 
 _driver = None
 
+# Test code: still in the graph (impact questions legitimately reach tests) but
+# kept out of ordinary retrieval so it does not crowd out the implementation.
+_TEST_PATH = re.compile(
+    r"(^|/)(tests?|__tests__|specs?|testing)/|(^|/)test_[^/]*\.py$|_test\.(py|go)$|"
+    r"\.(test|spec)\.[cm]?[jt]sx?$|(^|/)conftest\.py$"
+)
+
+
+def is_test_path(path: str) -> bool:
+    return bool(_TEST_PATH.search(path.replace("\\", "/")))
+
 
 class GraphUnavailable(RuntimeError):
     """Neo4j is configured but cannot be reached / queried."""
@@ -147,13 +158,13 @@ async def build_graph(factory, source_id: uuid.UUID, version_id: uuid.UUID,
     )
 
     # File nodes + Repository CONTAINS File
-    file_rows = [{"key": f"{vid}:f:{f.id}", "path": f.path, "lang": f.language or "text",
+    file_rows = [{"key": f"{vid}:f:{f.id}", "path": f.path, "lang": f.language or "text", "test": is_test_path(f.path),
                   "name": f.path.rsplit("/", 1)[-1]} for f in files]
     for i in range(0, len(file_rows), BATCH):
         await _run(
             "UNWIND $rows AS r MERGE (n:CxNode {key: r.key}) "
             "SET n:File, n.vid = $vid, n.path = r.path, n.lpath = toLower(r.path), "
-            "n.lang = r.lang, n.name = r.name, n.lname = toLower(r.name) "
+            "n.lang = r.lang, n.name = r.name, n.lname = toLower(r.name), n.test = r.test "
             "WITH n MATCH (repo:CxNode {key: $rk}) MERGE (repo)-[:CONTAINS]->(n)",
             rows=file_rows[i:i + BATCH], vid=vid, rk=f"{vid}:repo",
         )
@@ -168,7 +179,8 @@ async def build_graph(factory, source_id: uuid.UUID, version_id: uuid.UUID,
         by_label.setdefault(KIND_LABEL.get(a.kind, "Symbol"), []).append({
             "key": f"{vid}:{a.id}", "aid": str(a.id), "fkey": f"{vid}:f:{f.id}",
             "qn": a.qualified_name, "name": name, "kind": a.kind, "path": f.path,
-            "lang": f.language or "text", "start": a.span_start_line, "end": a.span_end_line,
+            "lang": f.language or "text", "test": is_test_path(f.path),
+            "start": a.span_start_line, "end": a.span_end_line,
         })
     for label, rows in by_label.items():
         for i in range(0, len(rows), BATCH):
@@ -176,7 +188,7 @@ async def build_graph(factory, source_id: uuid.UUID, version_id: uuid.UUID,
                 f"UNWIND $rows AS r MERGE (n:CxNode {{key: r.key}}) SET n:{label}, "
                 "n.vid = $vid, n.aid = r.aid, n.qn = r.qn, n.name = r.name, "
                 "n.lname = toLower(r.name), n.kind = r.kind, n.path = r.path, "
-                "n.lang = r.lang, n.start = r.start, n.end = r.end "
+                "n.lang = r.lang, n.start = r.start, n.end = r.end, n.test = r.test "
                 "WITH n, r MATCH (f:CxNode {key: r.fkey}) MERGE (f)-[:DEFINES]->(n)",
                 rows=rows[i:i + BATCH], vid=vid,
             )
@@ -221,10 +233,13 @@ async def graph_stats(version_id: uuid.UUID | str) -> dict:
 
 
 _TOKEN = re.compile(r"[A-Za-z_][A-Za-z0-9_]{2,}")
+_DOTTED = re.compile(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+")
 _STOP = frozenset(
     "the and for with what when how why does did are was were this that from into "
     "which where who would should could about happens happen code file files "
-    "function functions class classes method methods".split()
+    "function functions class classes method methods modify modifies change changes "
+    "changed affect affected affects impact impacted break breaks remove delete edit "
+    "update could might".split()
 )
 
 
@@ -232,6 +247,11 @@ def query_tokens(query: str) -> list[str]:
     """Lower-cased lookup tokens: words, CamelCase/snake_case parts, 4-char
     stems of long words ('authentication' -> 'auth')."""
     out: list[str] = []
+    # dotted identifiers ("Signer.unsign") are the strongest anchors: keep whole
+    for d in _DOTTED.findall(query):
+        d = d.lower()
+        if d not in out:
+            out.append(d)
     for w in _TOKEN.findall(query):
         parts = [w] + re.findall(r"[A-Z][a-z0-9]+|[a-z0-9]+", w) if (
             "_" in w or any(c.isupper() for c in w[1:])) else [w]
@@ -244,21 +264,23 @@ def query_tokens(query: str) -> list[str]:
     return out[:16]
 
 
-async def name_anchors(version_id: uuid.UUID, tokens: list[str], limit: int = 8) -> list[dict]:
+async def name_anchors(version_id: uuid.UUID, tokens: list[str], limit: int = 8,
+                       include_tests: bool = False) -> list[dict]:
     """Symbols whose name matches the query — structural anchors, scoped by vid."""
     if not tokens:
         return []
     return await _run(
         "MATCH (n:CxNode {vid: $vid}) WHERE n.aid IS NOT NULL AND n.kind <> 'doc_section' "
+        "AND ($tests OR coalesce(n.test, false) = false) "
         "AND any(t IN $tokens WHERE n.lname CONTAINS t) "
         "WITH n, size([t IN $tokens WHERE n.lname CONTAINS t]) AS hits "
         "RETURN n.aid AS aid, hits ORDER BY hits DESC, size(n.name) ASC LIMIT $lim",
-        vid=str(version_id), tokens=tokens, lim=limit,
+        vid=str(version_id), tokens=tokens, lim=limit, tests=include_tests,
     )
 
 
 async def expand(version_id: uuid.UUID, anchors: list[str], hops: int, direction: str = "both",
-                 per_hop_limit: int | None = None) -> dict:
+                 per_hop_limit: int | None = None, include_tests: bool = False) -> dict:
     """Bounded breadth-first traversal run server-side, one Cypher query per hop.
 
     ``direction``: 'both' follows edges either way; 'in' follows only
@@ -268,14 +290,21 @@ async def expand(version_id: uuid.UUID, anchors: list[str], hops: int, direction
     """
     vid = str(version_id)
     hops = max(1, min(hops, MAX_HOPS))
-    lim = per_hop_limit or get_settings().graph_hop_limit
+    settings = get_settings()
+    lim = per_hop_limit or settings.graph_hop_limit
+    # Impact questions favour recall: name-only (ambiguous) caller links are kept
+    # there, ranked after confident ones and flagged "uncertain" in the path.
+    min_conf = 0.0 if direction == "in" else settings.graph_min_confidence
     arrow = "<-" if direction == "in" else "-"
     query = (
         f"MATCH (a:CxNode {{vid: $vid}}){arrow}[r:{TRAVERSE_RELS}]-(b:CxNode {{vid: $vid}}) "
         "WHERE a.key IN $keys AND b.aid IS NOT NULL AND NOT b.key IN $seen "
+        # ambiguous (name-only) call links are dropped; tests only when wanted
+        "AND coalesce(r.conf, 1.0) >= $minc "
+        "AND ($tests OR coalesce(b.test, false) = false) "
         "RETURN a.aid AS src, b.aid AS dst, b.name AS name, b.kind AS kind, b.path AS path, "
         "type(r) AS rel, startNode(r) = a AS outgoing, coalesce(r.conf, 1.0) AS conf "
-        "ORDER BY conf DESC LIMIT $lim"
+        "ORDER BY coalesce(b.test, false) ASC, conf DESC LIMIT $lim"
     )
     nodes: dict[str, dict] = {}
     meta: dict[str, dict] = {}
@@ -295,7 +324,7 @@ async def expand(version_id: uuid.UUID, anchors: list[str], hops: int, direction
         if not frontier:
             break
         rows = await _run(query, vid=vid, keys=[f"{vid}:{a}" for a in frontier],
-                          seen=list(seen), lim=lim)
+                          seen=list(seen), lim=lim, minc=min_conf, tests=include_tests)
         edges_traversed += len(rows)
         nxt: list[str] = []
         for r in rows:
@@ -305,7 +334,7 @@ async def expand(version_id: uuid.UUID, anchors: list[str], hops: int, direction
                 "hop": hop, "conf": r["conf"], "name": r["name"], "kind": r["kind"],
                 "path": r["path"],
                 "parent": {"aid": r["src"], "rel": r["rel"],
-                           "from_parent": r["outgoing"]},
+                           "from_parent": r["outgoing"], "conf": r["conf"]},
             }
             seen.add(f"{vid}:{r['dst']}")
             nxt.append(r["dst"])
@@ -336,7 +365,8 @@ def reasoning_path(anchors: list[str], found: dict, selected: set[str]) -> dict:
             a, b = (p["aid"], cur) if p["from_parent"] else (cur, p["aid"])
             if (a, b, p["rel"]) not in seen_edges:
                 seen_edges.add((a, b, p["rel"]))
-                edges.append({"from": a, "to": b, "type": p["rel"]})
+                edges.append({"from": a, "to": b, "type": p["rel"],
+                              "confidence": round(p.get("conf", 1.0), 2)})
             if p["aid"] not in nodes and p["aid"] in meta:
                 nodes[p["aid"]] = {"id": p["aid"], **meta[p["aid"]], "anchor": True}
             cur = p["aid"]

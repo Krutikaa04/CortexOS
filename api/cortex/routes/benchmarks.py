@@ -4,15 +4,16 @@ import json
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from cortex.access import guard, user_of, version_owned
 from cortex.db import get_session
 from cortex.jobs import enqueue
 
-router = APIRouter(prefix="/v1/benchmarks", tags=["benchmarks"])
+router = APIRouter(prefix="/v1/benchmarks", tags=["benchmarks"], dependencies=[Depends(guard)])
 
 SUITES_DIR = Path(__file__).resolve().parent.parent / "benchmark" / "suites"
 
@@ -36,8 +37,10 @@ async def list_suites() -> list[dict]:
 
 @router.post("", status_code=202)
 async def create_benchmark(
-    body: CreateBenchmarkRequest, session: AsyncSession = Depends(get_session)
+    body: CreateBenchmarkRequest, request: Request,
+    session: AsyncSession = Depends(get_session),
 ) -> dict:
+    user = user_of(request)
     suite_path = SUITES_DIR / f"{body.suite}.json"
     if not suite_path.exists():
         raise HTTPException(status_code=404, detail=f"suite {body.suite!r} not found")
@@ -45,11 +48,15 @@ async def create_benchmark(
 
     if body.source_version_id:
         version_id = body.source_version_id
+        if not await version_owned(session, version_id, user):
+            raise HTTPException(status_code=404, detail="source version not found")
     else:
         row = (
             await session.execute(
-                text("SELECT id FROM source_version WHERE status = 'ready' "
-                     "ORDER BY ingested_at DESC LIMIT 1")
+                text("SELECT v.id FROM source_version v JOIN source s ON s.id = v.source_id "
+                     "WHERE v.status = 'ready' AND s.owner_id = :u "
+                     "ORDER BY v.ingested_at DESC LIMIT 1"),
+                {"u": user},
             )
         ).first()
         if row is None:
@@ -69,20 +76,25 @@ async def create_benchmark(
 
     job_id = await enqueue(
         "run_benchmark",
-        {"benchmark_run_id": str(run_id), "questions": suite["questions"]},
+        {"benchmark_run_id": str(run_id), "questions": suite["questions"], "owner_id": user},
     )
     return {"benchmark_run_id": str(run_id), "job_id": str(job_id), "status": "running"}
 
 
 @router.get("")
-async def list_benchmarks(session: AsyncSession = Depends(get_session)) -> list[dict]:
+async def list_benchmarks(
+    request: Request, session: AsyncSession = Depends(get_session)
+) -> list[dict]:
     rows = (
         await session.execute(
             text(
-                "SELECT id, name, status, created_at, finished_at, "
-                "       report -> 'summary' AS summary "
-                "FROM benchmark_run ORDER BY created_at DESC LIMIT 50"
-            )
+                "SELECT b.id, b.name, b.status, b.created_at, b.finished_at, "
+                "       b.report -> 'summary' AS summary "
+                "FROM benchmark_run b JOIN source_version v ON v.id = b.source_version_id "
+                "JOIN source s ON s.id = v.source_id WHERE s.owner_id = :u "
+                "ORDER BY b.created_at DESC LIMIT 50"
+            ),
+            {"u": user_of(request)}
         )
     ).all()
     return [

@@ -32,21 +32,62 @@ export const API_URL = (
   process.env.NEXT_PUBLIC_CORTEX_API_URL ?? "http://localhost:8000"
 ).replace(/\/+$/, "");
 
+// Per-user access token (a CORTEX_API_TOKENS entry). Kept in this browser's
+// localStorage only and sent as a Bearer header; never placed in a URL.
+const TOKEN_KEY = "cortexos.accessToken";
+// Fired when the runtime rejects the current token (expired / revoked), so the
+// app can return to the sign-in screen.
+export const UNAUTHORIZED_EVENT = "cortex-unauthorized";
+
+export function getAccessToken(): string {
+  try {
+    return localStorage.getItem(TOKEN_KEY) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+export function setAccessToken(token: string): void {
+  try {
+    if (token) localStorage.setItem(TOKEN_KEY, token);
+    else localStorage.removeItem(TOKEN_KEY);
+  } catch {
+    /* storage unavailable: token simply is not remembered */
+  }
+}
+
+export function authHeaders(extra: Record<string, string> = {}): Record<string, string> {
+  const t = getAccessToken();
+  return t ? { ...extra, Authorization: `Bearer ${t}` } : extra;
+}
+
+function failure(path: string, status: number, detail?: string): Error {
+  if (status === 401) {
+    if (typeof window !== "undefined")
+      window.dispatchEvent(new Event(UNAUTHORIZED_EVENT));
+    return new Error("Your session has ended — please sign in again.");
+  }
+  return new Error(detail ?? `${path}: HTTP ${status}`);
+}
+
 async function get<T>(path: string): Promise<T> {
-  const res = await fetch(`${API_URL}${path}`, { cache: "no-store" });
-  if (!res.ok) throw new Error(`${path}: HTTP ${res.status}`);
+  const res = await fetch(`${API_URL}${path}`, {
+    cache: "no-store",
+    headers: authHeaders(),
+  });
+  if (!res.ok) throw failure(path, res.status);
   return res.json();
 }
 
 async function post<T>(path: string, body: unknown): Promise<T> {
   const res = await fetch(`${API_URL}${path}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: authHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify(body),
   });
   if (!res.ok) {
     const detail = await res.json().catch(() => ({}));
-    throw new Error(detail.detail ?? `${path}: HTTP ${res.status}`);
+    throw failure(path, res.status, detail.detail);
   }
   return res.json();
 }
@@ -54,12 +95,12 @@ async function post<T>(path: string, body: unknown): Promise<T> {
 async function send<T>(method: "PATCH" | "DELETE", path: string, body?: unknown): Promise<T> {
   const res = await fetch(`${API_URL}${path}`, {
     method,
-    headers: body ? { "Content-Type": "application/json" } : undefined,
+    headers: authHeaders(body ? { "Content-Type": "application/json" } : {}),
     body: body ? JSON.stringify(body) : undefined,
   });
   if (!res.ok) {
     const detail = await res.json().catch(() => ({}));
-    throw new Error(detail.detail ?? `${path}: HTTP ${res.status}`);
+    throw failure(path, res.status, detail.detail);
   }
   return res.status === 204 ? (undefined as T) : res.json();
 }
@@ -93,6 +134,8 @@ export const api = {
     ),
   graphStats: (versionId: string) =>
     get<GraphStats>(`/v1/sources/${versionId}/graph/stats`),
+  rebuildGraph: (versionId: string) =>
+    post<{ status: string }>(`/v1/sources/${versionId}/graph/rebuild`, {}),
   architecture: (versionId: string) =>
     get<Architecture>(`/v1/sources/${versionId}/architecture`),
   artifact: (versionId: string, artifactId: string) =>

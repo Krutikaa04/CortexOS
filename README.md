@@ -156,6 +156,10 @@ Full list and defaults live in [`.env.example`](.env.example). Essentials:
 | `CORTEX_ENV` | `dev` \| `production` (tightens CORS + DB TLS). |
 | `CORTEX_ALLOWED_ORIGINS` | Exact browser origins allowed in production (the Studio URL). |
 | `CORTEX_API_TOKEN` | If set, requires `Authorization: Bearer <token>` on all non-health endpoints. |
+| `CORTEX_AUTH_REQUIRED` | `true` = users must register / sign in (accounts isolate repositories, chats and results). |
+| `CORTEX_REGISTRATION_OPEN` | `false` = invite-only (no new sign-ups). |
+| `CORTEX_LOCAL_OWNER_EMAIL` | The account that adopts repositories ingested before accounts existed. |
+| `CORTEX_API_TOKENS` | `user:token,user2:token2` - one token per user; each user sees only their own repositories. |
 | `CORTEX_GIT_TOKEN` | Token for cloning private https repositories. |
 | `NEXT_PUBLIC_CORTEX_API_URL` | Frontend → backend base URL (set in Vercel). |
 

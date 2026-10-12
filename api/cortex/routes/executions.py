@@ -5,17 +5,18 @@ import json
 import logging
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.responses import StreamingResponse
 
+from cortex.access import guard, user_of
 from cortex.db import get_session, get_session_factory
 
 log = logging.getLogger("cortex.executions")
 
-router = APIRouter(prefix="/v1/executions", tags=["executions"])
+router = APIRouter(prefix="/v1/executions", tags=["executions"], dependencies=[Depends(guard)])
 
 EVENT_POLL_SECONDS = 0.25
 STREAM_TIMEOUT_SECONDS = 900
@@ -26,14 +27,18 @@ class CreateExecutionRequest(BaseModel):
     mode: str = "cortex"  # 'cortex' | 'baseline'
     source_version_id: uuid.UUID | None = None  # default: latest ready version
     session_id: uuid.UUID | None = None  # links multi-turn SVM state
+    no_cache: bool = False  # force a fresh run instead of re-serving a cached answer
 
 
-async def _resolve_version(session: AsyncSession, requested: uuid.UUID | None) -> uuid.UUID:
+async def _resolve_version(
+    session: AsyncSession, requested: uuid.UUID | None, user: str
+) -> uuid.UUID:
     if requested is not None:
         row = (
             await session.execute(
-                text("SELECT id FROM source_version WHERE id = :id AND status = 'ready'"),
-                {"id": requested},
+                text("SELECT v.id FROM source_version v JOIN source s ON s.id = v.source_id "
+                     "WHERE v.id = :id AND v.status = 'ready' AND s.owner_id = :u"),
+                {"id": requested, "u": user},
             )
         ).first()
         if row is None:
@@ -42,9 +47,11 @@ async def _resolve_version(session: AsyncSession, requested: uuid.UUID | None) -
     row = (
         await session.execute(
             text(
-                "SELECT id FROM source_version WHERE status = 'ready' "
-                "ORDER BY ingested_at DESC LIMIT 1"
-            )
+                "SELECT v.id FROM source_version v JOIN source s ON s.id = v.source_id "
+                "WHERE v.status = 'ready' AND s.owner_id = :u "
+                "ORDER BY v.ingested_at DESC LIMIT 1"
+            ),
+            {"u": user},
         )
     ).first()
     if row is None:
@@ -53,7 +60,8 @@ async def _resolve_version(session: AsyncSession, requested: uuid.UUID | None) -
 
 
 async def _run_pipeline(execution_id: uuid.UUID, mode: str, version_id: uuid.UUID,
-                        query: str, session_id: uuid.UUID | None) -> None:
+                        query: str, session_id: uuid.UUID | None,
+                        cache_key: str | None = None) -> None:
     """Background task: run the selected pipeline and persist the outcome."""
     factory = get_session_factory()
     try:
@@ -75,6 +83,11 @@ async def _run_pipeline(execution_id: uuid.UUID, mode: str, version_id: uuid.UUI
                 {"id": execution_id, "answer": result["answer"],
                  "metrics": json.dumps(result["metrics"])},
             )
+            if cache_key:
+                from cortex import answer_cache
+
+                await answer_cache.store(session, cache_key, version_id, query,
+                                         execution_id, result["answer"], result["metrics"])
             await session.commit()
     except Exception as exc:  # noqa: BLE001 — outcome must always be recorded
         log.exception("execution %s failed", execution_id)
@@ -97,11 +110,12 @@ async def _run_pipeline(execution_id: uuid.UUID, mode: str, version_id: uuid.UUI
 
 @router.post("", status_code=202)
 async def create_execution(
-    body: CreateExecutionRequest, session: AsyncSession = Depends(get_session)
+    body: CreateExecutionRequest, request: Request,
+    session: AsyncSession = Depends(get_session),
 ) -> dict:
     if body.mode not in ("cortex", "baseline"):
         raise HTTPException(status_code=422, detail="mode must be 'cortex' or 'baseline'")
-    version_id = await _resolve_version(session, body.source_version_id)
+    version_id = await _resolve_version(session, body.source_version_id, user_of(request))
     if body.session_id is not None:
         # a chat session is bound to one repository; never mix repositories
         owner = (await session.execute(
@@ -111,6 +125,40 @@ async def create_execution(
             raise HTTPException(status_code=409, detail="session belongs to a different repository")
 
     execution_id = uuid.uuid4()
+    cache_key = None
+    if body.mode == "cortex":
+        from cortex import answer_cache
+
+        graph_stats = (await session.execute(
+            text("SELECT stats->'graph' FROM source_version WHERE id = :id"),
+            {"id": version_id})).scalar_one_or_none()
+        cache_key = answer_cache.make_key(version_id, body.query, graph_stats)
+        hit = None if body.no_cache else await answer_cache.lookup(session, cache_key)
+        if hit is not None:
+            # Re-serve the stored answer, metrics and event trail as a new,
+            # already-finished execution (so history and the UI work unchanged).
+            metrics = {**hit["metrics"], "cache": {
+                "hit": True, "source_execution_id": str(hit["execution_id"])}}
+            await session.execute(
+                text(
+                    "INSERT INTO execution (id, source_version_id, session_id, mode, query, "
+                    "answer, status, metrics, finished_at) VALUES (:id, :vid, :sid, 'cortex', "
+                    ":query, :answer, 'succeeded', cast(:metrics as jsonb), now())"
+                ),
+                {"id": execution_id, "vid": version_id, "sid": body.session_id,
+                 "query": body.query, "answer": hit["answer"], "metrics": json.dumps(metrics)},
+            )
+            await session.execute(
+                text(
+                    "INSERT INTO execution_event (execution_id, seq, event_type, payload) "
+                    "SELECT :new, seq, event_type, payload FROM execution_event "
+                    "WHERE execution_id = :src"
+                ),
+                {"new": execution_id, "src": hit["execution_id"]},
+            )
+            await session.commit()
+            return {"execution_id": str(execution_id), "status": "succeeded", "cached": True}
+
     await session.execute(
         text(
             "INSERT INTO execution (id, source_version_id, session_id, mode, query, status) "
@@ -122,23 +170,26 @@ async def create_execution(
     await session.commit()
 
     asyncio.create_task(
-        _run_pipeline(execution_id, body.mode, version_id, body.query, body.session_id)
+        _run_pipeline(execution_id, body.mode, version_id, body.query, body.session_id,
+                      cache_key)
     )
     return {"execution_id": str(execution_id), "status": "running"}
 
 
 @router.get("")
 async def list_executions(
-    limit: int = 50, session: AsyncSession = Depends(get_session)
+    request: Request, limit: int = 50, session: AsyncSession = Depends(get_session)
 ) -> list[dict]:
     rows = (
         await session.execute(
             text(
-                "SELECT id, mode, query, answer, status, failure_reason, metrics, "
-                "source_version_id, session_id, started_at, finished_at "
-                "FROM execution ORDER BY started_at DESC LIMIT :limit"
+                "SELECT e.id, e.mode, e.query, e.answer, e.status, e.failure_reason, "
+                "e.metrics, e.source_version_id, e.session_id, e.started_at, e.finished_at "
+                "FROM execution e JOIN source_version v ON v.id = e.source_version_id "
+                "JOIN source s ON s.id = v.source_id WHERE s.owner_id = :u "
+                "ORDER BY e.started_at DESC LIMIT :limit"
             ),
-            {"limit": min(limit, 200)},
+            {"limit": min(limit, 200), "u": user_of(request)},
         )
     ).all()
     return [
@@ -208,6 +259,15 @@ async def list_events(
          "ts": r.created_at.isoformat()}
         for r in rows
     ]
+
+
+@router.post("/{execution_id}/stream-ticket")
+async def stream_ticket(execution_id: uuid.UUID, request: Request) -> dict:
+    """Issue a short-lived ticket for the SSE stream (ownership is enforced by
+    the router guard on {execution_id})."""
+    from cortex.security import make_stream_ticket
+
+    return {"ticket": make_stream_ticket(str(execution_id), user_of(request))}
 
 
 @router.get("/{execution_id}/stream")

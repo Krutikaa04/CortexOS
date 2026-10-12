@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from cortex.access import guard
 from cortex.db import get_session
 from cortex.kernel.insights import (
     analyze_cycles,
@@ -19,7 +20,7 @@ from cortex.kernel.insights import (
     analyze_insights,
 )
 
-router = APIRouter(prefix="/v1/sources", tags=["insights"])
+router = APIRouter(prefix="/v1/sources", tags=["insights"], dependencies=[Depends(guard)])
 
 
 async def _require_ready(session: AsyncSession, version_id: uuid.UUID) -> None:

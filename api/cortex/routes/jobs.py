@@ -6,10 +6,11 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from cortex.access import guard
 from cortex.db import get_session
 from cortex.jobs import TERMINAL_STATUSES, request_cancel
 
-router = APIRouter(prefix="/v1/jobs", tags=["jobs"])
+router = APIRouter(prefix="/v1/jobs", tags=["jobs"], dependencies=[Depends(guard)])
 
 _JOB_SQL = text(
     "SELECT id, kind, status, stage, progress, attempts, error, "

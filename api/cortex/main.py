@@ -1,5 +1,6 @@
 """CortexOS control plane (FastAPI)."""
 
+import hmac
 import logging
 import time
 from contextlib import asynccontextmanager
@@ -13,7 +14,8 @@ from cortex import __version__
 from cortex.config import get_settings
 from cortex.db import dispose_engine, get_session_factory
 from cortex.models_client import ModelUnavailableError, get_model_client
-from cortex.security import check_api_token
+from cortex.security import LOCAL_USER, token_users, verify_stream_ticket
+from cortex.routes.auth import router as auth_router
 from cortex.routes.benchmarks import router as benchmarks_router
 from cortex.routes.executions import router as executions_router
 from cortex.routes.graph import router as graph_router
@@ -55,6 +57,11 @@ async def lifespan(app: FastAPI):
                 ),
                 {"m": STALE_EXECUTION_MINUTES},
             )
+            # a graph rebuild interrupted by the restart must not read "building" forever
+            await session.execute(text(
+                "UPDATE source_version SET stats = jsonb_set(stats, '{graph}', "
+                "'{\"status\": \"failed\", \"error\": \"interrupted by restart\"}'::jsonb) "
+                "WHERE stats->'graph'->>'status' = 'building'"))
             await session.commit()
             if result.rowcount:
                 log.info("recovered %d orphaned execution(s)", result.rowcount)
@@ -71,6 +78,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="CortexOS Runtime", version=__version__, lifespan=lifespan)
+app.include_router(auth_router)
 app.include_router(sources_router)
 app.include_router(graph_router)
 app.include_router(impact_router)
@@ -85,13 +93,49 @@ app.include_router(insights_router)
 # even a 401 carries CORS headers). Enforces bearer auth only when
 # CORTEX_API_TOKEN is configured, and emits one structured access log per
 # request — health probes are excluded to keep logs signal, not noise.
+_ANONYMOUS_PATHS = ("/v1/auth/register", "/v1/auth/login")
+
+
+async def _resolve_user(request: Request) -> str | None:
+    """Bearer token -> user id: a configured service token, else a login
+    session. Anonymous access only when auth is not required and no tokens are
+    configured (open local mode), or for register/login."""
+    from cortex import accounts
+
+    if request.url.path in _ANONYMOUS_PATHS:
+        return LOCAL_USER  # a stale token must not block signing in again
+    header = request.headers.get("authorization", "")
+    scheme, _, presented = header.partition(" ")
+    if scheme.lower() == "bearer" and presented:
+        found = None
+        for token, user in token_users().items():  # constant-time, no early exit
+            if hmac.compare_digest(token.encode(), presented.encode()):
+                found = user
+        if found:
+            return found
+        account = await accounts.user_for_token(presented)
+        return account["id"] if account else None
+    if token_users() or get_settings().auth_required:
+        return None
+    return LOCAL_USER
+
+
 @app.middleware("http")
 async def _ops_middleware(request: Request, call_next):
     path = request.url.path
     is_health = path.startswith("/health")
+    request.state.user = LOCAL_USER
     if request.method != "OPTIONS" and not is_health:
-        if not check_api_token(request.headers.get("authorization")):
+        ticket = request.query_params.get("ticket")
+        if ticket and path.endswith("/stream"):
+            # EventSource cannot send headers: a short-lived, execution-bound
+            # ticket (issued to an authenticated user) stands in for the token.
+            user = verify_stream_ticket(ticket, path.rstrip("/").split("/")[-2])
+        else:
+            user = await _resolve_user(request)
+        if user is None:
             return JSONResponse(status_code=401, content={"detail": "unauthorized"})
+        request.state.user = user
     start = time.monotonic()
     try:
         response = await call_next(request)

@@ -47,6 +47,20 @@ class Settings(BaseSettings):
     env: str = "dev"
     log_level: str = "INFO"
     api_token: str = ""
+    # Per-user access tokens: "alice:token1,bob:token2". Each token is one user;
+    # repositories, sessions and executions are visible only to their owner.
+    api_tokens: str = ""
+    # Accounts. With auth_required, every non-health endpoint (except register
+    # and login) needs a session token or a configured API token; when false
+    # and no tokens are configured the API stays open as the "local" user.
+    auth_required: bool = False
+    registration_open: bool = True
+    session_days: int = 30
+    # Admin-designated email whose account adopts pre-accounts ("local") repos.
+    local_owner_email: str = ""
+    # HMAC key for stream tickets. Empty = random per process (tickets then
+    # do not survive a restart, which is harmless: they live 2 minutes).
+    secret_key: str = ""
 
     # CORS: comma-separated exact origins allowed to call the API from a
     # browser (e.g. the Vercel Studio URL). In dev, empty means "reflect any
@@ -74,6 +88,9 @@ class Settings(BaseSettings):
     graph_max_hops: int = 2
     # Cap on nodes pulled per traversal hop.
     graph_hop_limit: int = 60
+    # Edges below this confidence (name-only, ambiguous call resolution) are
+    # not followed during question-time traversal.
+    graph_min_confidence: float = 0.6
 
     # Comma-separated job kinds this worker claims (its workload lane).
     # Empty = claim every registered kind (single-worker dev setups).

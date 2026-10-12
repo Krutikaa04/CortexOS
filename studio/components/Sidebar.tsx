@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useState } from "react";
+import { useAuth } from "@/lib/auth";
 import { useRepo } from "@/lib/repo-context";
 import {
   IconArchitecture,
@@ -128,6 +129,7 @@ function RepoSwitcher() {
 
 function RuntimeFooter() {
   const { offline, loading } = useRepo();
+  const { user, logout } = useAuth();
   const state = loading ? "connecting" : offline ? "offline" : "live";
   const styles = {
     live: { dot: "bg-signal-green", label: "Runtime live", text: "text-ink-400" },
@@ -137,6 +139,16 @@ function RuntimeFooter() {
 
   return (
     <div className="border-t border-ink-800 px-4 py-3">
+      {user && (
+        <div className="mb-2 flex items-center justify-between gap-2 text-[11px]">
+          <span className="truncate text-ink-300" title={user.email ?? user.display_name}>
+            {user.email ?? user.display_name}
+          </span>
+          <button className="shrink-0 text-ink-500 hover:text-ink-200" onClick={() => logout()}>
+            Sign out
+          </button>
+        </div>
+      )}
       <div className="flex items-center gap-2 text-[11px]">
         <span
           className={`h-1.5 w-1.5 rounded-full ${styles.dot} ${state === "live" ? "animate-pulse" : ""}`}

@@ -62,6 +62,10 @@ class Source(Base):
     kind: Mapped[str] = mapped_column(String(32), default="git_repo", nullable=False)
     uri: Mapped[str] = mapped_column(Text, nullable=False)
     display_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    # User that added the repository; every read is scoped to it.
+    owner_id: Mapped[str] = mapped_column(
+        String(64), default="local", server_default="local", nullable=False, index=True
+    )
     created_at: Mapped[datetime] = _created_at()
 
 
@@ -283,6 +287,51 @@ class ChatSession(Base):
         ForeignKey("source_version.id"), nullable=False, index=True
     )
     title: Mapped[str] = mapped_column(String(200), default="New chat", nullable=False)
+    created_at: Mapped[datetime] = _created_at()
+
+
+class AppUser(Base):
+    """A registered account. ``str(id)`` is the owner_id of its repositories."""
+
+    __tablename__ = "app_user"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    email: Mapped[str] = mapped_column(String(320), unique=True, nullable=False)
+    display_name: Mapped[str] = mapped_column(String(64), nullable=False)
+    password_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = _created_at()
+
+
+class UserSession(Base):
+    """Login session; only the SHA-256 of the bearer token is stored."""
+
+    __tablename__ = "user_session"
+
+    token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("app_user.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = _created_at()
+
+
+class AnswerCache(Base):
+    """Re-servable answers keyed by (version, question, graph, config) - see
+    cortex/answer_cache.py. Immutable snapshots mean entries never go stale,
+    they just stop being reachable."""
+
+    __tablename__ = "answer_cache"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    source_version_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("source_version.id"), nullable=False, index=True
+    )
+    query: Mapped[str] = mapped_column(Text, nullable=False)
+    execution_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    answer: Mapped[str] = mapped_column(Text, nullable=False)
+    metrics: Mapped[dict] = mapped_column(
+        JSONB, default=dict, server_default=text("'{}'::jsonb"), nullable=False)
+    hits: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
     created_at: Mapped[datetime] = _created_at()
 
 

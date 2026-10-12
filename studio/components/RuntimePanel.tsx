@@ -130,6 +130,9 @@ export function RuntimePanel({
             </div>
           </dl>
           <div className="mt-2 text-[10px] text-ink-600">
+            {m.cache?.hit
+              ? "Served from cache: no model call now - figures are from the original run. "
+              : ""}
             Model tokens = question understanding ({m.graph_rag.query_understanding_tokens}) +
             prompt + answer ({m.graph_rag.answer_tokens}).
           </div>

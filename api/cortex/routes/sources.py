@@ -2,16 +2,17 @@
 
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from cortex.access import guard, user_of
 from cortex.db import get_session
 from cortex.jobs import enqueue
 from cortex.security import ValidationError, validate_git_ref, validate_repo_uri
 
-router = APIRouter(prefix="/v1/sources", tags=["sources"])
+router = APIRouter(prefix="/v1/sources", tags=["sources"], dependencies=[Depends(guard)])
 
 
 class CreateSourceRequest(BaseModel):
@@ -21,7 +22,7 @@ class CreateSourceRequest(BaseModel):
 
 
 @router.post("", status_code=202)
-async def create_source(body: CreateSourceRequest) -> dict:
+async def create_source(body: CreateSourceRequest, request: Request) -> dict:
     """Queue ingestion of a Git repository (remote URL, or local path in dev).
 
     The URI/ref are validated before they can reach the git subprocess —
@@ -34,13 +35,16 @@ async def create_source(body: CreateSourceRequest) -> dict:
         raise HTTPException(status_code=422, detail=str(exc))
     job_id = await enqueue(
         "ingest_source",
-        {"uri": uri, "ref": ref, "display_name": body.display_name},
+        {"uri": uri, "ref": ref, "display_name": body.display_name,
+         "owner_id": user_of(request)},
     )
     return {"job_id": str(job_id), "status": "queued"}
 
 
 @router.get("")
-async def list_sources(session: AsyncSession = Depends(get_session)) -> list[dict]:
+async def list_sources(
+    request: Request, session: AsyncSession = Depends(get_session)
+) -> list[dict]:
     rows = (
         await session.execute(
             text(
@@ -51,8 +55,10 @@ async def list_sources(session: AsyncSession = Depends(get_session)) -> list[dic
                 "  SELECT * FROM source_version "
                 "  WHERE source_id = s.id ORDER BY ingested_at DESC LIMIT 1"
                 ") v ON true "
+                "WHERE s.owner_id = :u "
                 "ORDER BY s.created_at"
-            )
+            ),
+            {"u": user_of(request)},
         )
     ).all()
     return [

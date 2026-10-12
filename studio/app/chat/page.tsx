@@ -593,6 +593,14 @@ function AnswerTurn({
   return (
     <div className="space-y-4" onMouseEnter={onFocus}>
       {intentChip && <span className={`badge ${intentChip.cls}`}>{intentChip.label}</span>}
+      {exec.metrics?.cache?.hit && (
+        <span
+          className="badge bg-signal-cyan/10 text-signal-cyan"
+          title="Same question, repository version, graph and settings as an earlier run. No model was called; the metrics shown are from that original run."
+        >
+          Cached answer
+        </span>
+      )}
       <div className="group relative">
         <AnswerBody text={answer} />
         <div className="absolute -right-1 -top-1 opacity-0 transition-opacity group-hover:opacity-100">
@@ -630,7 +638,9 @@ function GraphReasoning({
   const names = new Map(gr.path.nodes.map((n) => [n.id, n.name]));
   // one readable line per edge: A -CALLS-> B
   const lines = gr.path.edges.slice(0, 8).map(
-    (e) => `${names.get(e.from) ?? "?"} —${e.type}→ ${names.get(e.to) ?? "?"}`,
+    (e) =>
+      `${names.get(e.from) ?? "?"} —${e.type}→ ${names.get(e.to) ?? "?"}` +
+      ((e.confidence ?? 1) < 0.6 ? " (uncertain match)" : ""),
   );
   if (gr.engine !== "graph-rag")
     return (

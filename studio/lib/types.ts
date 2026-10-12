@@ -73,6 +73,7 @@ export interface GraphPathEdge {
   from: string;
   to: string;
   type: string;
+  confidence?: number;
 }
 
 // Per-question Graph-RAG instrumentation (all measured, see kernel/pipeline.py).
@@ -112,11 +113,15 @@ export interface GraphStats {
     files?: number;
     languages?: Record<string, number>;
     coverage?: number | null;
+    error?: string;
   };
 }
 
 export interface ExecutionMetrics {
   graph_rag?: GraphRagMetrics;
+  // present when the answer was re-served; all other figures are the
+  // ORIGINAL run's measurements, not work done for this request
+  cache?: { hit: boolean; source_execution_id: string };
   input_tokens?: number;
   output_tokens?: number;
   context_tokens_sent?: number;

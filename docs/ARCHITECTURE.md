@@ -170,11 +170,37 @@ flowchart LR
   a percentage exists only from a real baseline benchmark.
 - **Setup**: `docker compose up neo4j` (Community Edition, free). Hosted:
   any Neo4j endpoint via `NEO4J_URI/USERNAME/PASSWORD/DATABASE` (e.g. AuraDB Free).
+- **Backfill**: `POST /v1/sources/{version}/graph/rebuild` projects an already
+  ingested version from Postgres into Neo4j (no re-clone); Studio offers it as
+  a "Build knowledge graph" button when a repository has no graph.
+- **Path quality**: test code is excluded from anchors and traversal unless the
+  question mentions tests or asks about impact (tests are ranked last).
+  Same-name call targets are narrowed by caller file and production-vs-test
+  evidence at link time; still-ambiguous links carry confidence 0.5, are skipped
+  in ordinary traversal and shown as "uncertain" for impact questions.
 - **Languages**: Python (AST) and JS/TS (regex parser) get symbol-level nodes
   and call/import/inherit edges; Markdown gets sections; other files get a
   file/module node. `coverage` = share of code files parsed to symbols.
 - **Security**: git token is sent only to `CORTEX_GIT_ALLOWED_HOSTS`; in
   production repositories must be credential-free https URLs on those hosts.
   Neo4j credentials are server-side only.
-- **Limitations**: the API has a single shared bearer token, not per-user
-  accounts, so per-user repository ownership is not enforced; no question cache yet.
+- **Answer cache**: `answer_cache` table (migration 0007), keyed by
+  sha256(version id, normalized question, graph build stats, pipeline revision,
+  models, hop/confidence settings). A hit creates a finished execution with the
+  stored answer, metrics and event trail (`metrics.cache.hit`; figures are the
+  original run's, and the UI says so). Not cached: baseline runs, failures,
+  degraded-graph answers, "context did not contain it" answers. Entries expire
+  after 30 days; `no_cache: true` on `POST /v1/executions` forces a fresh run.
+  Session turns share the cache but a hit does not page context into the
+  session's working memory.
+- **Accounts**: `app_user` + `user_session` (migration 0008). Register/login
+  (`cortex/accounts.py`) issue an opaque session token; a request's bearer
+  token resolves to a configured service token or a login session, and the
+  resulting user id is the `owner_id` used by the ownership guard below.
+  Studio gates the whole app behind the sign-in screen and drops all
+  repository state on sign-out.
+- **Ownership**: `source.owner_id` (migration 0006). A router-level guard
+  (`cortex/access.py`) 404s any `{version_id|execution_id|session_id|job_id|run_id}`
+  not owned by the token's user; list endpoints and body-supplied ids are
+  filtered/checked in the route. Identity is a bearer token from
+  `CORTEX_API_TOKENS` - there is no password login or OAuth.

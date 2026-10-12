@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { API_URL, api } from "@/lib/api";
+import { useAuth } from "@/lib/auth";
 import { useRepo } from "@/lib/repo-context";
 import type { HealthStatus } from "@/lib/types";
 
@@ -18,6 +19,7 @@ export default function SettingsPage() {
   const { selected, sources } = useRepo();
   const [health, setHealth] = useState<HealthStatus | null>(null);
   const [err, setErr] = useState(false);
+  const { user, logout } = useAuth();
 
   useEffect(() => {
     let active = true;
@@ -66,6 +68,21 @@ export default function SettingsPage() {
               Object.entries(health.checks).map(([k, v]) => (
                 <Row key={k} label={`Check · ${k}`} value={v} />
               ))}
+          </div>
+        </section>
+
+        <section className="mt-6">
+          <div className="mb-2 text-[11px] uppercase tracking-wider text-ink-500">Account</div>
+          <div className="panel">
+            <Row label="Signed in as" value={user?.email ?? user?.display_name ?? "—"} />
+            <div className="flex items-center justify-between px-4 py-3">
+              <span className="text-sm text-ink-400">
+                Your repositories, chats and results are private to this account.
+              </span>
+              <button className="chip" onClick={() => logout()}>
+                Sign out
+              </button>
+            </div>
           </div>
         </section>
 

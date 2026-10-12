@@ -30,6 +30,7 @@ log = logging.getLogger("cortex.kernel.retriever")
 VECTOR_WEIGHT = 0.6
 LEXICAL_WEIGHT = 0.4
 GRAPH_DECAY = 0.6  # score multiplier per expansion hop
+TEST_PENALTY = 0.4  # score multiplier for test files when tests weren't asked for
 GRAPH_ANCHOR_K = 6  # semantic anchors per requirement when the graph drives retrieval
 NAME_ANCHOR_WEIGHT = 0.8
 # "what is affected / who depends on X" -> follow dependents (incoming edges)
@@ -76,11 +77,17 @@ async def retrieve(
     trace.update({"engine": "postgres-hybrid", "graph_error": None})
     name_hits: list[dict] = []
     use_graph = graphstore.enabled()
+    q_all = " ".join([query, *(r.description for r in requirements)]).lower()
+    # Test code is an anchor only when the question mentions tests. (Impact
+    # questions still *traverse* to tests - see _graph_expand - but they are
+    # never what the question is about.)
+    want_tests = "test" in q_all
     if use_graph:
         tokens = graphstore.query_tokens(
             " ".join([query, *(k for r in requirements for k in r.keywords)]))
         try:
-            name_hits = await graphstore.name_anchors(source_version_id, tokens)
+            name_hits = await graphstore.name_anchors(
+                source_version_id, tokens, include_tests=want_tests)
         except graphstore.GraphUnavailable as exc:
             use_graph = False
             trace["graph_error"] = str(exc)[:200]
@@ -144,6 +151,10 @@ async def retrieve(
                 score = NAME_ANCHOR_WEIGHT * min(1.0, hits[str(r.id)] / min(top, 3))
                 _merge(candidates, r, score, "", f"graph:anchor:name:{hits[str(r.id)]}")
 
+        if not want_tests:  # implementation outranks test code as an anchor
+            for c in candidates.values():
+                if graphstore.is_test_path(c.path):
+                    c.score *= TEST_PENALTY
         expanded = bool(use_graph and candidates and await _graph_expand(
             session, source_version_id, candidates, profile, query, trace))
         # --- Postgres graph expansion (fallback when Neo4j is off/unreachable) ---
@@ -243,7 +254,9 @@ async def _graph_expand(session, version_id, candidates, profile, query, trace) 
     hops = max(1, min(profile.dependency_depth, min(get_settings().graph_max_hops, graphstore.MAX_HOPS)))
     direction = "in" if _IMPACT_Q.search(query) else "both"
     try:
-        found = await graphstore.expand(version_id, anchor_ids, hops, direction)
+        found = await graphstore.expand(
+            version_id, anchor_ids, hops, direction,
+            include_tests=direction == "in" or "test" in query.lower())
     except graphstore.GraphUnavailable as exc:
         trace["graph_error"] = str(exc)[:200]
         log.warning("graph traversal failed: %s", exc)

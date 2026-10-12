@@ -2,7 +2,7 @@
 // live SSE stream from a running CortexOS runtime. Every event is a fact
 // about a real execution as it happens — never fabricated, never replayed.
 
-import { API_URL } from "./api";
+import { API_URL, authHeaders } from "./api";
 import type { ExecutionEvent } from "./types";
 
 export interface ExecutionEventStream {
@@ -24,8 +24,37 @@ export class LiveExecutionEventStream implements ExecutionEventStream {
     onDone: (status: string) => void,
     onError?: (error: Error) => void,
   ): () => void {
+    let closed = false;
+    let source: EventSource | null = null;
+    // EventSource cannot send an Authorization header, so an authenticated
+    // POST first obtains a short-lived ticket bound to this execution.
+    fetch(`${API_URL}/v1/executions/${this.executionId}/stream-ticket`, {
+      method: "POST",
+      headers: authHeaders(),
+    })
+      .then((r) => {
+        if (!r.ok) throw new Error(`stream ticket: HTTP ${r.status}`);
+        return r.json() as Promise<{ ticket: string }>;
+      })
+      .then(({ ticket }) => {
+        if (closed) return;
+        source = this.open(ticket, onEvent, onDone, onError);
+      })
+      .catch((e) => !closed && onError?.(e instanceof Error ? e : new Error(String(e))));
+    return () => {
+      closed = true;
+      source?.close();
+    };
+  }
+
+  private open(
+    ticket: string,
+    onEvent: (event: ExecutionEvent) => void,
+    onDone: (status: string) => void,
+    onError?: (error: Error) => void,
+  ): EventSource {
     const source = new EventSource(
-      `${API_URL}/v1/executions/${this.executionId}/stream`,
+      `${API_URL}/v1/executions/${this.executionId}/stream?ticket=${encodeURIComponent(ticket)}`,
     );
     source.onmessage = () => {}; // typed events only
     const handler = (e: MessageEvent) => {
@@ -47,7 +76,7 @@ export class LiveExecutionEventStream implements ExecutionEventStream {
       source.close();
       onError?.(new Error("event stream disconnected"));
     };
-    return () => source.close();
+    return source;
   }
 }
 

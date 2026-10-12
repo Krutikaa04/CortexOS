@@ -14,9 +14,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from cortex.access import guard
 from cortex.db import get_session
 
-router = APIRouter(prefix="/v1/sources", tags=["graph"])
+router = APIRouter(prefix="/v1/sources", tags=["graph"], dependencies=[Depends(guard)])
 
 
 def _github_blob_url(uri: str, commit_sha: str, path: str,
@@ -53,6 +54,65 @@ async def _resolve_version(session: AsyncSession, version_id: uuid.UUID) -> tupl
     if row is None:
         raise HTTPException(status_code=404, detail="source version not found")
     return row.uri, row.commit_sha
+
+
+async def _rebuild_graph(version_id: uuid.UUID) -> None:
+    """Background task: (re)project one version into Neo4j and record the outcome
+    in ``source_version.stats.graph`` so the UI reflects real state."""
+    import json
+
+    from cortex import graphstore
+    from cortex.db import get_session_factory
+
+    factory = get_session_factory()
+
+    async def record(g: dict) -> None:
+        async with factory() as s:
+            await s.execute(
+                text("UPDATE source_version SET stats = jsonb_set("
+                     "coalesce(stats, '{}'::jsonb), '{graph}', cast(:g as jsonb)) WHERE id = :id"),
+                {"id": version_id, "g": json.dumps(g)})
+            await s.commit()
+
+    try:
+        async with factory() as s:
+            row = (await s.execute(
+                text("SELECT s.id AS sid, s.uri, s.display_name FROM source_version v "
+                     "JOIN source s ON s.id = v.source_id WHERE v.id = :id"),
+                {"id": version_id})).one()
+        built = await graphstore.build_graph(factory, row.sid, version_id, row.display_name, row.uri)
+        await record(built)
+    except Exception as exc:  # noqa: BLE001 - outcome must always be recorded
+        await record({"status": "failed", "error": str(exc)[:300]})
+
+
+@router.post("/{version_id}/graph/rebuild", status_code=202)
+async def rebuild_graph(
+    version_id: uuid.UUID, session: AsyncSession = Depends(get_session)
+) -> dict:
+    """Build (or rebuild) the Neo4j graph for an already-ingested version from
+    Postgres - no re-clone. Used to backfill repositories ingested before the
+    Knowledge Graph existed."""
+    import asyncio
+    import json
+
+    from cortex import graphstore
+
+    if not graphstore.enabled():
+        raise HTTPException(status_code=409, detail="Neo4j is not configured")
+    await _resolve_version(session, version_id)
+    cur = (await session.execute(
+        text("SELECT stats->'graph'->>'status' AS st FROM source_version WHERE id = :id"),
+        {"id": version_id})).scalar_one_or_none()
+    if cur == "building":
+        return {"status": "building"}
+    await session.execute(
+        text("UPDATE source_version SET stats = jsonb_set(coalesce(stats, '{}'::jsonb), "
+             "'{graph}', cast(:g as jsonb)) WHERE id = :id"),
+        {"id": version_id, "g": json.dumps({"status": "building"})})
+    await session.commit()
+    asyncio.create_task(_rebuild_graph(version_id))
+    return {"status": "building"}
 
 
 @router.get("/{version_id}/graph/stats")

@@ -76,3 +76,27 @@ def test_api_token_enforced_when_set(monkeypatch):
     assert check_api_token("Bearer wrong") is False
     assert check_api_token(None) is False
     assert check_api_token("secret") is False
+
+
+def test_per_user_tokens_and_stream_tickets(monkeypatch):
+    from cortex.config import get_settings
+    from cortex.security import (
+        authenticate, make_stream_ticket, verify_stream_ticket,
+    )
+
+    monkeypatch.setenv("CORTEX_API_TOKENS", "alice:tok-a,bob:tok-b,bad entry")
+    monkeypatch.setenv("CORTEX_API_TOKEN", "legacy")
+    get_settings.cache_clear()
+    try:
+        assert authenticate("Bearer tok-a") == "alice"
+        assert authenticate("Bearer tok-b") == "bob"
+        assert authenticate("Bearer legacy") == "local"  # legacy token = local user
+        assert authenticate("Bearer nope") is None
+        assert authenticate(None) is None
+        t = make_stream_ticket("exec-1", "alice")
+        assert verify_stream_ticket(t, "exec-1") == "alice"
+        assert verify_stream_ticket(t, "exec-2") is None  # bound to the execution
+        assert verify_stream_ticket(t[:-2] + "00", "exec-1") is None  # tampered
+        assert verify_stream_ticket(make_stream_ticket("exec-1", "alice", ttl=-5), "exec-1") is None
+    finally:
+        get_settings.cache_clear()

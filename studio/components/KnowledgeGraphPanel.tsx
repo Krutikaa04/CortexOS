@@ -47,6 +47,7 @@ export function KnowledgeGraphPanel({
   const [focusOnly, setFocusOnly] = useState(false);
   const [search, setSearch] = useState("");
   const [focusId, setFocusId] = useState<string | null>(null);
+  const [reload, setReload] = useState(0);
 
   useEffect(() => {
     let active = true;
@@ -64,7 +65,7 @@ export function KnowledgeGraphPanel({
     return () => {
       active = false;
     };
-  }, [versionId, limit]);
+  }, [versionId, limit, reload]);
 
   // base graph + reasoning-path nodes (which may sit outside the top-N) + expansions
   const { nodes, edges } = useMemo(() => {
@@ -160,12 +161,49 @@ export function KnowledgeGraphPanel({
   }, [search, nodes]);
 
   const build = stats?.build;
+  const building = build?.status === "building";
+  const needsBuild = !!stats?.enabled && stats.available && build?.status !== "ready" && !building;
+
+  // poll while a rebuild runs, then reload everything
+  useEffect(() => {
+    if (!building) return;
+    const t = setInterval(async () => {
+      const s = await api.graphStats(versionId).catch(() => null);
+      if (s && s.build?.status !== "building") {
+        setStats(s);
+        setReload((n) => n + 1);
+      }
+    }, 3000);
+    return () => clearInterval(t);
+  }, [building, versionId]);
+
+  const startBuild = async () => {
+    try {
+      await api.rebuildGraph(versionId);
+      setStats((s) => (s ? { ...s, build: { status: "building" } } : s));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  };
   const coverage = build?.coverage;
 
   return (
     <div className="space-y-2">
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-ink-400">
-        {stats?.enabled && stats.available ? (
+        {needsBuild || building ? (
+          <span className="flex items-center gap-2 text-signal-amber">
+            {building
+              ? "Building knowledge graph…"
+              : build?.status === "failed"
+                ? `Graph build failed${build.error ? `: ${build.error}` : ""}`
+                : "This repository has no knowledge graph yet."}
+            {!building && (
+              <button className="chip" onClick={startBuild}>
+                {build?.status === "failed" ? "Retry" : "Build knowledge graph"}
+              </button>
+            )}
+          </span>
+        ) : stats?.enabled && stats.available ? (
           <>
             <Stat n={stats.nodes} label="nodes" />
             <Stat n={stats.edges} label="edges" />

@@ -10,14 +10,15 @@ module adds conversation management without a second memory system:
 
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from cortex.access import guard, user_of, version_owned
 from cortex.db import get_session
 
-router = APIRouter(prefix="/v1/sessions", tags=["sessions"])
+router = APIRouter(prefix="/v1/sessions", tags=["sessions"], dependencies=[Depends(guard)])
 
 
 class CreateSessionRequest(BaseModel):
@@ -31,15 +32,10 @@ class RenameSessionRequest(BaseModel):
 
 @router.post("", status_code=201)
 async def create_session(
-    body: CreateSessionRequest, session: AsyncSession = Depends(get_session)
+    body: CreateSessionRequest, request: Request,
+    session: AsyncSession = Depends(get_session),
 ) -> dict:
-    ready = (
-        await session.execute(
-            text("SELECT 1 FROM source_version WHERE id = :id"),
-            {"id": body.source_version_id},
-        )
-    ).first()
-    if ready is None:
+    if not await version_owned(session, body.source_version_id, user_of(request)):
         raise HTTPException(status_code=404, detail="source version not found")
     sid = uuid.uuid4()
     title = (body.title or "New chat").strip()[:200] or "New chat"
@@ -57,12 +53,15 @@ async def create_session(
 
 @router.get("")
 async def list_sessions(
-    source_version_id: uuid.UUID, session: AsyncSession = Depends(get_session)
+    source_version_id: uuid.UUID, request: Request,
+    session: AsyncSession = Depends(get_session),
 ) -> list[dict]:
     """Conversations for a repository, most-recently-active first.
 
     message_count and last_activity are derived from executions so session
     metadata never drifts from the actual messages."""
+    if not await version_owned(session, source_version_id, user_of(request)):
+        raise HTTPException(status_code=404, detail="not found")
     rows = (
         await session.execute(
             text(
