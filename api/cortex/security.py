@@ -8,6 +8,7 @@ pure functions so they are unit-testable without a server.
 from __future__ import annotations
 
 import re
+from urllib.parse import urlsplit
 
 from cortex.config import get_settings
 
@@ -40,6 +41,14 @@ def validate_repo_uri(uri: str, *, allow_local: bool | None = None) -> str:
     if s.lower().startswith("file://"):
         raise ValidationError("file:// URIs are not allowed")
     if _REMOTE_URI.match(s):
+        if get_settings().is_production:
+            # Public deployment: https to an allow-listed git host only. Blocks
+            # SSRF to internal addresses and non-https transports.
+            parts = urlsplit(s)
+            if parts.scheme.lower() != "https" or parts.username or parts.password:
+                raise ValidationError("only credential-free https repository URLs are allowed")
+            if (parts.hostname or "").lower() not in get_settings().git_allowed_hosts_list:
+                raise ValidationError("repository host is not allowed")
         return s
     # not a recognized remote → treat as a local path
     if not allow_local:

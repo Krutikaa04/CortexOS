@@ -133,3 +133,48 @@ disposes the connection pool.
 `artifact_edge` · `artifact_embedding` · `baseline_chunk` · `execution` ·
 `execution_event` · `chat_session` · `job` · `worker_heartbeat`. Managed by
 Alembic migrations (`api/alembic/versions`, `0001` → `0005`).
+
+## Knowledge Graph + Graph-RAG (Neo4j)
+
+The graph is a projection of the semantic artifacts and typed edges ingestion
+already writes to Postgres. Neo4j stores structure and pointers only (artifact
+id, path, symbol name, kind, span) - never source text. Source is resolved from
+Postgres by artifact id after traversal.
+
+```mermaid
+flowchart LR
+  A[Clone] --> B[Parse] --> C[Link edges] --> D[Build Neo4j graph] --> E[Embeddings] --> F[READY]
+  Q[Question] --> U[Requirements] --> S["Anchors: vector (k<=6) + Neo4j symbol-name match"]
+  S --> T["Bounded Neo4j traversal (1-3 hops)"] --> R[Resolve source by id] --> X[Context compiler] --> L[LLM]
+  L --> O["Answer + evidence + graph path + metrics"]
+```
+
+- **Schema**: `(:CxNode {key, vid, ...})` with labels `Repository`, `File`,
+  `Module`, `Class`, `Function`, `Method`, `Doc`, `Config`. Relationships:
+  `CONTAINS`, `DEFINES`, `IMPORTS`, `CALLS`, `EXTENDS`, `REFERENCES`,
+  `DOCUMENTS`. Only relationships the parsers actually resolve exist
+  (other types in the roadmap - IMPLEMENTS, READS, WRITES, TESTS, EXPOSES - are not extracted yet).
+- **Isolation**: every node has `vid` (source version id) and every Cypher
+  query filters on it; fetched artifacts are re-scoped by version in SQL.
+- **Traversal**: one Cypher query per hop, hop depth `CORTEX_GRAPH_MAX_HOPS`
+  (hard cap 3), per-hop node cap `CORTEX_GRAPH_HOP_LIMIT`. Questions about
+  impact ("what is affected if I modify X") follow dependents (incoming edges).
+- **Ingestion**: stage `building_graph` runs before embeddings. If Neo4j is
+  configured and the build fails the job fails (retried) - a version is never
+  READY without its graph. With `NEO4J_URI` empty the graph is recorded as
+  `disabled`, retrieval falls back to Postgres hybrid, and the UI says so.
+- **Metrics** (per question, `execution.metrics.graph_rag`): nodes explored,
+  edges traversed, candidate/selected sources, files, question / query-understanding /
+  context / answer / total model tokens, retrieval + graph + generation latency,
+  and the reasoning path. Token reduction is always `not_benchmarked` here;
+  a percentage exists only from a real baseline benchmark.
+- **Setup**: `docker compose up neo4j` (Community Edition, free). Hosted:
+  any Neo4j endpoint via `NEO4J_URI/USERNAME/PASSWORD/DATABASE` (e.g. AuraDB Free).
+- **Languages**: Python (AST) and JS/TS (regex parser) get symbol-level nodes
+  and call/import/inherit edges; Markdown gets sections; other files get a
+  file/module node. `coverage` = share of code files parsed to symbols.
+- **Security**: git token is sent only to `CORTEX_GIT_ALLOWED_HOSTS`; in
+  production repositories must be credential-free https URLs on those hosts.
+  Neo4j credentials are server-side only.
+- **Limitations**: the API has a single shared bearer token, not per-user
+  accounts, so per-user repository ownership is not enforced; no question cache yet.

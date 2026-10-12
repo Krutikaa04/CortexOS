@@ -6,11 +6,18 @@ import { api } from "@/lib/api";
 import { LiveExecutionEventStream } from "@/lib/eventStream";
 import { useRepo } from "@/lib/repo-context";
 import { filesUsed } from "@/lib/execution-insights";
-import type { ChatMessage, ChatSession, Execution, ExecutionEvent } from "@/lib/types";
+import type {
+  ChatMessage,
+  ChatSession,
+  Execution,
+  ExecutionEvent,
+  GraphRagMetrics,
+} from "@/lib/types";
 import { AnswerBody } from "@/components/AnswerBody";
 import { ArtifactDrawer, type ArtifactTarget } from "@/components/ArtifactDrawer";
 import { FilesUsed } from "@/components/FilesUsed";
 import { RuntimePanel } from "@/components/RuntimePanel";
+import { KnowledgeGraphPanel } from "@/components/KnowledgeGraphPanel";
 import { StageIndicator } from "@/components/StageIndicator";
 import { CopyButton } from "@/components/CodeBlock";
 import { IconClose, IconSend, IconSpinner } from "@/components/icons";
@@ -358,7 +365,14 @@ export default function ChatPage() {
                 <IconSpinner /> <span className="ml-2">Loading conversation…</span>
               </div>
             ) : empty ? (
-              <WelcomeState onPick={(q) => ask(q)} disabled={!versionId} />
+              <WelcomeState
+                onPick={(q) => ask(q)}
+                disabled={!versionId}
+                versionId={versionId}
+                onOpenArtifact={(artifactId) =>
+                  versionId && setDrawer({ versionId, artifactId })
+                }
+              />
             ) : (
               <div className="space-y-8">
                 {turns.map((turn) => (
@@ -385,6 +399,10 @@ export default function ChatPage() {
                         turn={turn}
                         onOpenFile={openFile}
                         onFocus={() => setActiveId(turn.id)}
+                        versionId={versionId}
+                        onOpenArtifact={(artifactId) =>
+                          versionId && setDrawer({ versionId, artifactId })
+                        }
                       />
                     )}
                   </div>
@@ -552,11 +570,16 @@ function AnswerTurn({
   turn,
   onOpenFile,
   onFocus,
+  versionId,
+  onOpenArtifact,
 }: {
   turn: Turn;
   onOpenFile: (qn: string) => void;
   onFocus: () => void;
+  versionId: string | null;
+  onOpenArtifact: (artifactId: string) => void;
 }) {
+  const gr = turn.execution?.metrics?.graph_rag;
   const exec = turn.execution!;
   const files = filesUsed(turn.events);
   const answer = exec.answer ?? exec.failure_reason ?? "No answer produced.";
@@ -583,6 +606,70 @@ function AnswerTurn({
             Relevant files &amp; functions
           </div>
           <FilesUsed files={files} onOpen={onOpenFile} />
+        </div>
+      )}
+
+      {gr && versionId && (
+        <GraphReasoning gr={gr} versionId={versionId} onOpenArtifact={onOpenArtifact} />
+      )}
+    </div>
+  );
+}
+
+// "Graph reasoning": the dependency path CortexOS traversed for this answer.
+function GraphReasoning({
+  gr,
+  versionId,
+  onOpenArtifact,
+}: {
+  gr: GraphRagMetrics;
+  versionId: string;
+  onOpenArtifact: (id: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const names = new Map(gr.path.nodes.map((n) => [n.id, n.name]));
+  // one readable line per edge: A -CALLS-> B
+  const lines = gr.path.edges.slice(0, 8).map(
+    (e) => `${names.get(e.from) ?? "?"} —${e.type}→ ${names.get(e.to) ?? "?"}`,
+  );
+  if (gr.engine !== "graph-rag")
+    return (
+      <div className="text-[11px] text-ink-500">
+        Graph-RAG inactive for this answer
+        {gr.graph_error ? ` (Neo4j: ${gr.graph_error.slice(0, 80)})` : " (Neo4j not configured)"}
+        {" "}- used Postgres hybrid retrieval.
+      </div>
+    );
+  return (
+    <div className="panel p-3">
+      <div className="flex items-center justify-between px-1">
+        <div className="text-[10px] uppercase tracking-wider text-ink-500">
+          Graph reasoning &middot; {gr.anchors} anchors &middot; {gr.graph_nodes_examined} nodes
+          explored &middot; {gr.selected_sources} used
+        </div>
+        <button className="chip" onClick={() => setOpen((o) => !o)}>
+          {open ? "Hide graph" : "Show graph path"}
+        </button>
+      </div>
+      {lines.length > 0 ? (
+        <ul className="mt-2 space-y-0.5 px-1 font-mono text-[11px] text-ink-300">
+          {lines.map((l, i) => (
+            <li key={i}>{l}</li>
+          ))}
+        </ul>
+      ) : (
+        <div className="mt-2 px-1 text-[11px] text-ink-500">
+          Answered from the anchor symbols directly - no relationships needed.
+        </div>
+      )}
+      {open && (
+        <div className="mt-3">
+          <KnowledgeGraphPanel
+            versionId={versionId}
+            path={gr.path}
+            height={380}
+            onOpenSource={onOpenArtifact}
+          />
         </div>
       )}
     </div>
@@ -655,9 +742,19 @@ function Composer({
   );
 }
 
-function WelcomeState({ onPick, disabled }: { onPick: (q: string) => void; disabled: boolean }) {
+function WelcomeState({
+  onPick,
+  disabled,
+  versionId,
+  onOpenArtifact,
+}: {
+  onPick: (q: string) => void;
+  disabled: boolean;
+  versionId: string | null;
+  onOpenArtifact: (artifactId: string) => void;
+}) {
   return (
-    <div className="flex flex-col items-center pt-16 text-center">
+    <div className="flex flex-col items-center pt-8 text-center">
       <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-signal-blue/15 font-mono text-lg font-bold text-signal-blue">
         C
       </div>
@@ -678,6 +775,14 @@ function WelcomeState({ onPick, disabled }: { onPick: (q: string) => void; disab
           </button>
         ))}
       </div>
+      {versionId && (
+        <div className="mt-8 w-full text-left">
+          <div className="mb-2 text-[10px] uppercase tracking-wider text-ink-500">
+            Knowledge graph
+          </div>
+          <KnowledgeGraphPanel versionId={versionId} height={340} onOpenSource={onOpenArtifact} />
+        </div>
+      )}
     </div>
   );
 }

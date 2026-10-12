@@ -11,11 +11,15 @@ they were found, so the compiler and Context X-Ray can explain decisions.
 """
 
 import logging
+import re
+import time
 import uuid
 from dataclasses import dataclass, field
 
 from sqlalchemy import text
 
+from cortex import graphstore
+from cortex.config import get_settings
 from cortex.db import get_session_factory
 from cortex.kernel.profiler import TaskProfile
 from cortex.kernel.requirements import Requirement
@@ -26,6 +30,14 @@ log = logging.getLogger("cortex.kernel.retriever")
 VECTOR_WEIGHT = 0.6
 LEXICAL_WEIGHT = 0.4
 GRAPH_DECAY = 0.6  # score multiplier per expansion hop
+GRAPH_ANCHOR_K = 6  # semantic anchors per requirement when the graph drives retrieval
+NAME_ANCHOR_WEIGHT = 0.8
+# "what is affected / who depends on X" -> follow dependents (incoming edges)
+_IMPACT_Q = re.compile(
+    r"\b(affect(?:ed|s)?|impact(?:ed|s)?|break(?:s)?|depend(?:s|ent|ents)? on|"
+    r"used by|callers? of|who (?:calls|uses)|if i (?:modify|change|edit|remove|delete))\b",
+    re.I,
+)
 
 
 @dataclass
@@ -47,13 +59,33 @@ async def retrieve(
     source_version_id: uuid.UUID,
     requirements: list[Requirement],
     profile: TaskProfile,
+    query: str = "",
+    trace: dict | None = None,
 ) -> list[Candidate]:
+    """``trace`` (optional out-param) receives the retrieval engine used and
+    the measured graph traversal, for Studio's reasoning-path view/metrics."""
     client = get_model_client()
     candidates: dict[uuid.UUID, Candidate] = {}
     factory = get_session_factory()
 
     req_texts = [r.description for r in requirements]
     req_embeddings = await client.embed(req_texts)
+
+    # --- graph anchors (Neo4j): symbols named in the question ---
+    trace = trace if trace is not None else {}
+    trace.update({"engine": "postgres-hybrid", "graph_error": None})
+    name_hits: list[dict] = []
+    use_graph = graphstore.enabled()
+    if use_graph:
+        tokens = graphstore.query_tokens(
+            " ".join([query, *(k for r in requirements for k in r.keywords)]))
+        try:
+            name_hits = await graphstore.name_anchors(source_version_id, tokens)
+        except graphstore.GraphUnavailable as exc:
+            use_graph = False
+            trace["graph_error"] = str(exc)[:200]
+            log.warning("graph unavailable, falling back to Postgres retrieval: %s", exc)
+    vector_k = min(profile.retrieval_top_k, GRAPH_ANCHOR_K) if use_graph else profile.retrieval_top_k
 
     async with factory() as session:
         for req, embedding in zip(requirements, req_embeddings):
@@ -72,7 +104,7 @@ async def retrieve(
                         "LIMIT :k"
                     ),
                     {"qe": str(embedding), "vid": source_version_id,
-                     "k": profile.retrieval_top_k},
+                     "k": vector_k},
                 )
             ).all()
             for r in rows:
@@ -96,7 +128,7 @@ async def retrieve(
                         "ORDER BY rank DESC LIMIT :k"
                     ),
                     {"terms": terms.replace(" | ", " OR "), "vid": source_version_id,
-                     "k": profile.retrieval_top_k // 2 + 1},
+                     "k": vector_k // 2 + 1},
                 )
             ).all()
             max_rank = max((r.rank for r in rows), default=1.0) or 1.0
@@ -104,8 +136,18 @@ async def retrieve(
                 _merge(candidates, r, (r.rank / max_rank) * LEXICAL_WEIGHT, req.id,
                        f"lexical:{req.id}:{r.rank:.3f}")
 
-        # --- graph expansion from the strongest hits ---
-        if profile.dependency_depth > 0 and candidates:
+        if name_hits:
+            top = max(len(graphstore.query_tokens(query)) or 1, 1)
+            rows = await _fetch_artifacts(session, source_version_id, [h["aid"] for h in name_hits])
+            hits = {h["aid"]: h["hits"] for h in name_hits}
+            for r in rows:
+                score = NAME_ANCHOR_WEIGHT * min(1.0, hits[str(r.id)] / min(top, 3))
+                _merge(candidates, r, score, "", f"graph:anchor:name:{hits[str(r.id)]}")
+
+        expanded = bool(use_graph and candidates and await _graph_expand(
+            session, source_version_id, candidates, profile, query, trace))
+        # --- Postgres graph expansion (fallback when Neo4j is off/unreachable) ---
+        if not expanded and profile.dependency_depth > 0 and candidates:
             frontier = [c.artifact_id for c in
                         sorted(candidates.values(), key=lambda c: c.score, reverse=True)[:6]]
             seen = set(frontier)
@@ -172,3 +214,59 @@ def _merge(candidates: dict, row, score: float, req_id: str, provenance: str) ->
         if req_id:
             existing.requirements.add(req_id)
         existing.provenance.append(provenance)
+
+
+async def _fetch_artifacts(session, version_id: uuid.UUID, ids: list[str]):
+    """Resolve graph node ids back to source. Re-scoped by version in SQL, so
+    even a corrupted graph cannot return another repository's code."""
+    if not ids:
+        return []
+    return (
+        await session.execute(
+            text(
+                "SELECT a.id, a.qualified_name, a.kind, a.raw_text, a.facts, "
+                "       a.summary_text, a.raw_token_count, sf.path "
+                "FROM semantic_artifact a JOIN source_file sf ON sf.id = a.source_file_id "
+                "WHERE a.source_version_id = :vid AND a.id = ANY(cast(:ids as uuid[]))"
+            ),
+            {"vid": version_id, "ids": ids},
+        )
+    ).all()
+
+
+async def _graph_expand(session, version_id, candidates, profile, query, trace) -> bool:
+    """Bounded Neo4j traversal from the strongest anchors; adds neighbours as
+    candidates scored by anchor score x decay^hop x edge confidence."""
+    t0 = time.monotonic()
+    anchors = [c for c in sorted(candidates.values(), key=lambda c: c.score, reverse=True)[:8]]
+    anchor_ids = [str(c.artifact_id) for c in anchors]
+    hops = max(1, min(profile.dependency_depth, min(get_settings().graph_max_hops, graphstore.MAX_HOPS)))
+    direction = "in" if _IMPACT_Q.search(query) else "both"
+    try:
+        found = await graphstore.expand(version_id, anchor_ids, hops, direction)
+    except graphstore.GraphUnavailable as exc:
+        trace["graph_error"] = str(exc)[:200]
+        log.warning("graph traversal failed: %s", exc)
+        return False
+    nodes = found["nodes"]
+    rows = await _fetch_artifacts(session, version_id, list(nodes))
+    by_id = {str(r.id): r for r in rows}
+    score_of = {str(c.artifact_id): c.score for c in anchors}
+    for aid, n in sorted(nodes.items(), key=lambda kv: kv[1]["hop"]):
+        r = by_id.get(aid)
+        if r is None:
+            continue
+        parent = n["parent"]["aid"]
+        base = score_of.get(parent, 0.5)
+        score = base * (GRAPH_DECAY ** n["hop"]) * n["conf"]
+        score_of[aid] = score
+        _merge(candidates, r, score, "", f"graph:hop{n['hop']}:{n['parent']['rel']}")
+    trace.update({
+        "engine": "graph-rag", "anchors": anchor_ids, "found": found, "hops": hops,
+        "direction": direction, "nodes_examined": found["nodes_examined"],
+        "edges_traversed": found["edges_traversed"],
+        "graph_ms": int((time.monotonic() - t0) * 1000),
+    })
+    return True
+
+

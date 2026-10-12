@@ -102,6 +102,13 @@ async def create_execution(
     if body.mode not in ("cortex", "baseline"):
         raise HTTPException(status_code=422, detail="mode must be 'cortex' or 'baseline'")
     version_id = await _resolve_version(session, body.source_version_id)
+    if body.session_id is not None:
+        # a chat session is bound to one repository; never mix repositories
+        owner = (await session.execute(
+            text("SELECT source_version_id FROM chat_session WHERE id = :id"),
+            {"id": body.session_id})).first()
+        if owner is not None and owner.source_version_id != version_id:
+            raise HTTPException(status_code=409, detail="session belongs to a different repository")
 
     execution_id = uuid.uuid4()
     await session.execute(

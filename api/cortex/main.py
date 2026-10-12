@@ -64,6 +64,9 @@ async def lifespan(app: FastAPI):
     # graceful shutdown: release DB connections so a rolling deploy doesn't
     # leak pooled connections against a managed Postgres connection cap
     await dispose_engine()
+    from cortex import graphstore
+
+    await graphstore.close()
     log.info("cortex api stopped")
 
 
@@ -193,8 +196,16 @@ async def health() -> JSONResponse:
     except ModelUnavailableError:
         checks["models"] = "unreachable"
 
+    from cortex import graphstore
+
+    if graphstore.enabled():
+        checks["knowledge_graph"] = "ok" if await graphstore.ping() else "unreachable"
+    else:
+        checks["knowledge_graph"] = "disabled"
+
     ready = checks["database"] == "ok" and checks["models"] == "ok"
-    degraded = not ready or checks["worker"] != "alive"
+    degraded = (not ready or checks["worker"] != "alive"
+                or checks["knowledge_graph"] == "unreachable")
     return JSONResponse(
         status_code=200,
         content={

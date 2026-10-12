@@ -12,6 +12,7 @@ import re
 from functools import lru_cache
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # libpq query params that asyncpg does not understand and must be stripped
@@ -56,6 +57,23 @@ class Settings(BaseSettings):
     # Supplied only via secure configuration (CORTEX_GIT_TOKEN); never logged,
     # never returned by the API. Empty = public repositories only.
     git_token: str = ""
+    # Hosts the git token may be sent to, and (in production) the only hosts
+    # repositories may be cloned from. Comma-separated.
+    git_allowed_hosts: str = "github.com,gitlab.com,bitbucket.org"
+
+    # --- Neo4j Knowledge Graph (Graph-RAG). Empty URI = graph disabled and the
+    # runtime falls back to the Postgres hybrid retriever, reported honestly.
+    neo4j_uri: str = Field("", validation_alias=AliasChoices("NEO4J_URI", "CORTEX_NEO4J_URI"))
+    neo4j_username: str = Field(
+        "neo4j", validation_alias=AliasChoices("NEO4J_USERNAME", "CORTEX_NEO4J_USERNAME"))
+    neo4j_password: str = Field(
+        "", validation_alias=AliasChoices("NEO4J_PASSWORD", "CORTEX_NEO4J_PASSWORD"))
+    neo4j_database: str = Field(
+        "neo4j", validation_alias=AliasChoices("NEO4J_DATABASE", "CORTEX_NEO4J_DATABASE"))
+    # Hop depth for question-time traversal (hard-capped at 3 in graphstore).
+    graph_max_hops: int = 2
+    # Cap on nodes pulled per traversal hop.
+    graph_hop_limit: int = 60
 
     # Comma-separated job kinds this worker claims (its workload lane).
     # Empty = claim every registered kind (single-worker dev setups).
@@ -76,6 +94,14 @@ class Settings(BaseSettings):
     @property
     def is_production(self) -> bool:
         return self.env.lower() in ("prod", "production")
+
+    @property
+    def graph_enabled(self) -> bool:
+        return bool(self.neo4j_uri)
+
+    @property
+    def git_allowed_hosts_list(self) -> list[str]:
+        return [h.strip().lower() for h in self.git_allowed_hosts.split(",") if h.strip()]
 
     @property
     def required_models(self) -> list[str]:

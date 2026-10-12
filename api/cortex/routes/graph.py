@@ -55,6 +55,33 @@ async def _resolve_version(session: AsyncSession, version_id: uuid.UUID) -> tupl
     return row.uri, row.commit_sha
 
 
+@router.get("/{version_id}/graph/stats")
+async def get_graph_stats(
+    version_id: uuid.UUID, session: AsyncSession = Depends(get_session)
+) -> dict:
+    """Measured Knowledge Graph statistics for one version.
+
+    ``stats`` come from ingestion (measured when the graph was built); the live
+    Neo4j counts are re-read here so a wiped/unreachable graph is reported as
+    such rather than silently assumed present.
+    """
+    from cortex import graphstore
+
+    await _resolve_version(session, version_id)
+    built = (await session.execute(
+        text("SELECT stats->'graph' AS g FROM source_version WHERE id = :id"),
+        {"id": version_id})).scalar_one_or_none() or {}
+    out = {"enabled": graphstore.enabled(), "available": False, "build": built,
+           "nodes": None, "edges": None}
+    if graphstore.enabled():
+        try:
+            live = await graphstore.graph_stats(version_id)
+            out.update(available=True, nodes=live["nodes"], edges=live["edges"])
+        except graphstore.GraphUnavailable as exc:
+            out["error"] = str(exc)[:200]
+    return out
+
+
 @router.get("/{version_id}/graph")
 async def get_graph(
     version_id: uuid.UUID,

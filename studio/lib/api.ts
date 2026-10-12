@@ -15,6 +15,7 @@ import type {
   FlowReport,
   InsightsOverview,
   ExecutionEvent,
+  GraphStats,
   HealthStatus,
   ImpactHistoryEntry,
   JobInfo,
@@ -90,6 +91,8 @@ export const api = {
       `/v1/sources/${versionId}/graph?limit=${limit}` +
         (kinds ? `&kinds=${encodeURIComponent(kinds)}` : ""),
     ),
+  graphStats: (versionId: string) =>
+    get<GraphStats>(`/v1/sources/${versionId}/graph/stats`),
   architecture: (versionId: string) =>
     get<Architecture>(`/v1/sources/${versionId}/architecture`),
   artifact: (versionId: string, artifactId: string) =>

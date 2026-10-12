@@ -60,11 +60,19 @@ export function ForceGraph({
   edges,
   onSelect,
   height = 560,
+  highlightNodes,
+  highlightEdges,
+  focusId,
 }: {
   nodes: FGNode[];
   edges: FGEdge[];
   onSelect?: (node: FGNode) => void;
   height?: number;
+  // Question-driven reasoning path: highlighted nodes/edges ("from>to" keys)
+  // are emphasised, everything else recedes.
+  highlightNodes?: Set<string>;
+  highlightEdges?: Set<string>;
+  focusId?: string | null;
 }) {
   const svgRef = useRef<SVGSVGElement>(null);
   const [pos, setPos] = useState<Record<string, Pos>>({});
@@ -223,9 +231,19 @@ export function ForceGraph({
     setTransform((t) => ({ ...t, k: Math.min(3, Math.max(0.3, t.k * factor)) }));
   };
 
+  const hl = highlightNodes && highlightNodes.size > 0 ? highlightNodes : null;
   const neighbours = hover ? adjacency.get(hover) : null;
   const isDim = (id: string) =>
-    hover != null && id !== hover && !(neighbours?.has(id));
+    hover != null
+      ? id !== hover && !neighbours?.has(id)
+      : hl != null && !hl.has(id) && id !== focusId;
+
+  // centre the view on a searched/selected node
+  useEffect(() => {
+    const p = focusId ? pos[focusId] : null;
+    if (p) setTransform({ x: 400 - p.x * 1.4, y: height / 2 - p.y * 1.4, k: 1.4 });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusId]);
 
   return (
     <div className="relative">
@@ -243,7 +261,8 @@ export function ForceGraph({
             const a = pos[e.from];
             const b = pos[e.to];
             if (!a || !b) return null;
-            const active = hover && (e.from === hover || e.to === hover);
+            const onPath = highlightEdges?.has(`${e.from}>${e.to}`) ?? false;
+            const active = onPath || (hover && (e.from === hover || e.to === hover));
             return (
               <line
                 key={i}
@@ -251,9 +270,9 @@ export function ForceGraph({
                 y1={a.y}
                 x2={b.x}
                 y2={b.y}
-                stroke={active ? "#5aa7ff" : "#2a3348"}
-                strokeWidth={active ? 1.4 : 0.7}
-                strokeOpacity={hover && !active ? 0.15 : 0.6}
+                stroke={onPath ? "#ffc75f" : active ? "#5aa7ff" : "#2a3348"}
+                strokeWidth={onPath ? 2.4 : active ? 1.4 : 0.7}
+                strokeOpacity={onPath ? 1 : (hover || hl) && !active ? 0.12 : 0.6}
               />
             );
           })}
@@ -279,10 +298,10 @@ export function ForceGraph({
                 <circle
                   r={r}
                   fill={colorOf(n.kind)}
-                  stroke="#07090e"
-                  strokeWidth={1.5}
+                  stroke={hl?.has(n.id) ? "#ffc75f" : n.id === focusId ? "#ffffff" : "#07090e"}
+                  strokeWidth={hl?.has(n.id) || n.id === focusId ? 2.5 : 1.5}
                 />
-                {(n.id === hover || (n.degree ?? 0) >= 12) && (
+                {(n.id === hover || n.id === focusId || hl?.has(n.id) || (n.degree ?? 0) >= 12) && (
                   <text
                     x={r + 3}
                     y={3}

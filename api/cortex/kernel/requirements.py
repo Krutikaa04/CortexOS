@@ -48,7 +48,8 @@ class Requirement:
 
 
 async def generate_requirements(
-    query: str, profile: TaskProfile, *, allow_model: bool = True
+    query: str, profile: TaskProfile, *, allow_model: bool = True,
+    usage: dict | None = None,
 ) -> tuple[list[Requirement], str]:
     """Returns (requirements, strategy) where strategy is 'model' or 'heuristic'.
 
@@ -69,6 +70,9 @@ async def generate_requirements(
             temperature=0.0,
             max_tokens=512,
         )
+        if usage is not None:  # count this model call in the execution's token totals
+            usage["input_tokens"] = result.get("input_tokens", 0)
+            usage["output_tokens"] = result.get("output_tokens", 0)
         requirements = _parse_model_output(result["text"], max_reqs)
         if requirements:
             return requirements, "model"

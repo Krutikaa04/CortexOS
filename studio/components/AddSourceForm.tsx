@@ -167,6 +167,17 @@ function StatusBadge({ job }: { job: JobInfo }) {
   );
 }
 
+// User-facing ingestion stages (worker checkpoint name -> label).
+const STAGE_LABELS: Record<string, string> = {
+  cloning: "DOWNLOADING",
+  parsing: "PARSING",
+  linking: "PARSING",
+  building_graph: "BUILDING KNOWLEDGE GRAPH",
+  embedding: "CREATING EMBEDDINGS",
+  baseline_chunks: "INDEXING",
+  finalizing: "INDEXING",
+};
+
 function describe(job: JobInfo): string {
   switch (job.status) {
     case "queued":
@@ -183,7 +194,7 @@ function describe(job: JobInfo): string {
       return "WAITING FOR MODEL";
     case "running": {
       if (!job.stage) return "RUNNING";
-      const name = job.stage.replace(/_/g, " ").toUpperCase();
+      const name = STAGE_LABELS[job.stage] ?? job.stage.replace(/_/g, " ").toUpperCase();
       if (job.progress && job.progress.total != null) {
         return `${name} ${job.progress.done} / ${job.progress.total}`;
       }

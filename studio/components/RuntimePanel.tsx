@@ -98,6 +98,44 @@ export function RuntimePanel({
         <Stat label="Model calls" value={m.generation_calls ?? "—"} />
       </div>
 
+      {/* Graph-RAG retrieval summary: every figure is measured per question */}
+      {m.graph_rag && (
+        <div className="rounded-lg border border-ink-800 bg-ink-900/50 p-3">
+          <div className="mb-2 text-[10px] uppercase tracking-wider text-ink-500">
+            {m.graph_rag.engine === "graph-rag" ? "Graph-RAG" : "Hybrid retrieval (graph off)"}
+          </div>
+          <dl className="space-y-1 font-mono text-[11px]">
+            {(
+              [
+                ["Nodes explored", m.graph_rag.graph_nodes_examined],
+                ["Edges traversed", m.graph_rag.graph_edges_traversed],
+                ["Relevant nodes", m.graph_rag.selected_sources],
+                ["Files consulted", m.graph_rag.files_consulted],
+                ["Context tokens", m.graph_rag.context_tokens.toLocaleString()],
+                ["Model tokens", m.graph_rag.total_model_tokens.toLocaleString()],
+                ["Retrieval time", ms(m.graph_rag.retrieval_ms)],
+                ["Generation time", ms(m.graph_rag.generation_ms)],
+              ] as [string, React.ReactNode][]
+            ).map(([k, v]) => (
+              <div key={k} className="flex justify-between gap-2">
+                <dt className="text-ink-500">{k}</dt>
+                <dd className="text-ink-200">{v}</dd>
+              </div>
+            ))}
+            <div className="flex justify-between gap-2">
+              <dt className="text-ink-500">Token reduction</dt>
+              <dd className="text-ink-400" title="Shown only after a real baseline benchmark">
+                Not benchmarked
+              </dd>
+            </div>
+          </dl>
+          <div className="mt-2 text-[10px] text-ink-600">
+            Model tokens = question understanding ({m.graph_rag.query_understanding_tokens}) +
+            prompt + answer ({m.graph_rag.answer_tokens}).
+          </div>
+        </div>
+      )}
+
       {/* files used */}
       {files.length > 0 && (
         <div>

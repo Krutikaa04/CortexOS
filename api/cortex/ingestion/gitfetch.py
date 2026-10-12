@@ -5,6 +5,7 @@ import logging
 import re
 import subprocess
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from cortex.config import get_settings
 
@@ -51,8 +52,13 @@ def _authenticated_uri(uri: str) -> str:
     but never logged — callers log the original ``uri``. Public repositories
     keep working unchanged whether or not a token is set.
     """
-    token = get_settings().git_token
+    settings = get_settings()
+    token = settings.git_token
     if not token or not uri.startswith("https://") or "@" in uri.split("://", 1)[1]:
+        return uri
+    # The token is only ever sent to allow-listed git hosts, never to an
+    # arbitrary user-supplied URL.
+    if (urlsplit(uri).hostname or "").lower() not in settings.git_allowed_hosts_list:
         return uri
     host_and_path = uri.split("://", 1)[1]
     # 'x-access-token' works for GitHub PATs; GitLab/Bitbucket accept it too

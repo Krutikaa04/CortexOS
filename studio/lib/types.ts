@@ -62,7 +62,61 @@ export interface BudgetDecision {
   reason: string;
 }
 
+export interface GraphPathNode {
+  id: string;
+  name: string;
+  kind: string;
+  path: string;
+  anchor?: boolean;
+}
+export interface GraphPathEdge {
+  from: string;
+  to: string;
+  type: string;
+}
+
+// Per-question Graph-RAG instrumentation (all measured, see kernel/pipeline.py).
+export interface GraphRagMetrics {
+  engine: "graph-rag" | "postgres-hybrid";
+  graph_error: string | null;
+  hops: number | null;
+  direction: "both" | "in" | null;
+  anchors: number;
+  graph_nodes_examined: number;
+  graph_edges_traversed: number;
+  candidate_sources: number;
+  selected_sources: number;
+  files_consulted: number;
+  question_tokens: number;
+  query_understanding_tokens: number;
+  context_tokens: number;
+  answer_tokens: number;
+  total_model_tokens: number;
+  retrieval_ms: number;
+  graph_ms: number;
+  generation_ms: number;
+  total_ms: number;
+  selected_ids: string[];
+  path: { nodes: GraphPathNode[]; edges: GraphPathEdge[] };
+  token_reduction: "not_benchmarked";
+}
+
+export interface GraphStats {
+  enabled: boolean;
+  available: boolean;
+  nodes: number | null;
+  edges: number | null;
+  error?: string;
+  build: {
+    status?: string;
+    files?: number;
+    languages?: Record<string, number>;
+    coverage?: number | null;
+  };
+}
+
 export interface ExecutionMetrics {
+  graph_rag?: GraphRagMetrics;
   input_tokens?: number;
   output_tokens?: number;
   context_tokens_sent?: number;
@@ -345,7 +399,7 @@ export interface SourceSummary {
     id: string;
     commit_sha: string;
     status: string;
-    stats: Record<string, number>;
+    stats: Record<string, number> & { graph?: GraphStats["build"] };
     ingested_at: string | null;
   } | null;
 }

@@ -16,6 +16,26 @@ services:
       timeout: 3s
       retries: 10
 
+  # Knowledge Graph (Graph-RAG). Community Edition, free. Run alone with:
+  #   docker compose up neo4j
+  neo4j:
+    image: neo4j:5-community
+    environment:
+      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:?set NEO4J_PASSWORD in .env}
+      NEO4J_server_memory_heap_max__size: 512m
+    volumes:
+      - neo4j-data:/data
+    ports:
+      - "127.0.0.1:7474:7474"   # browser UI (localhost only)
+      - "127.0.0.1:7687:7687"   # bolt (localhost only)
+    networks: [cortex-internal]
+    healthcheck:
+      test: ["CMD-SHELL", "wget --spider -q http://localhost:7474 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
   cortex-model:
     image: ollama/ollama:latest
     entrypoint: ["/bin/sh", "/entrypoint.sh"]
@@ -56,6 +76,8 @@ services:
         condition: service_completed_successfully
       cortex-model:
         condition: service_healthy
+      neo4j:
+        condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request;urllib.request.urlopen('http://localhost:8000/health/live', timeout=3)\""]
       interval: 10s
@@ -78,6 +100,8 @@ services:
         condition: service_completed_successfully
       cortex-model:
         condition: service_healthy
+      neo4j:
+        condition: service_healthy
 
   # Benchmark lane: long-running low-priority research work, isolated so
   # it only competes for the local model, never for the job queue.
@@ -95,8 +119,11 @@ services:
         condition: service_completed_successfully
       cortex-model:
         condition: service_healthy
+      neo4j:
+        condition: service_healthy
 
 volumes:
+  neo4j-data:
   cortex-pgdata:
   cortex-models:
   cortex-ingest:

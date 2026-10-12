@@ -15,6 +15,7 @@ import time
 import uuid
 from typing import Any
 
+from cortex import graphstore
 from cortex.config import get_settings
 from cortex.events import EventEmitter, EventType
 from cortex.kernel.budget import InferenceBudgetController
@@ -135,8 +136,9 @@ async def run_cortex_execution(
 
     # --- 2. requirements ---
     t_requirements = time.monotonic()
+    req_usage: dict[str, int] = {}
     requirements, strategy = await generate_requirements(
-        query, profile, allow_model=not fast_path
+        query, profile, allow_model=not fast_path, usage=req_usage
     )
     requirements_ms = int((time.monotonic() - t_requirements) * 1000)
     if strategy == "model":
@@ -168,11 +170,12 @@ async def run_cortex_execution(
         # --- 3. retrieve ---
         await emitter.emit(
             EventType.RETRIEVAL_STARTED,
-            {"strategy": "hybrid", "round": round_no,
+            {"strategy": "graph-rag" if graphstore.enabled() else "hybrid", "round": round_no,
              "top_k": profile.retrieval_top_k, "graph_depth": profile.dependency_depth},
         )
         t_retrieval = time.monotonic()
-        candidates = await retrieve(source_version_id, requirements, profile)
+        trace: dict[str, Any] = {}
+        candidates = await retrieve(source_version_id, requirements, profile, query, trace)
         retrieval_ms = int((time.monotonic() - t_retrieval) * 1000)
         embedding_calls += 1  # retriever embeds all requirements in one batch
         for c in candidates[:30]:
@@ -335,6 +338,11 @@ async def run_cortex_execution(
             "decisions": [d.as_dict() for d in budget.decisions],
         }
     )
+    metrics["graph_rag"] = _graph_rag_metrics(
+        trace, query, candidates, context, reused_candidates, req_usage,
+        total_input_tokens, total_output_tokens, retrieval_ms, inference_ms,
+        metrics["total_ms"],
+    )
     if session_id is not None:
         metrics["svm"] = {
             "pages_reused": pages_reused,
@@ -344,3 +352,44 @@ async def run_cortex_execution(
         }
     await emitter.emit(EventType.EXECUTION_COMPLETED, {"metrics": metrics})
     return {"answer": answer, "metrics": metrics}
+
+
+def _graph_rag_metrics(
+    trace: dict, query: str, candidates: list, context, reused: list, req_usage: dict,
+    in_tok: int, out_tok: int, retrieval_ms: int, generation_ms: int, total_ms: int,
+) -> dict[str, Any]:
+    """Per-question Graph-RAG instrumentation. Every figure is measured;
+    model tokens include the query-understanding call, not just the answer."""
+    included = [i.candidate for i in context.included] if context else []
+    selected = {str(c.artifact_id) for c in included} | {str(c.artifact_id) for c in reused}
+    found = trace.get("found")
+    path = (
+        graphstore.reasoning_path(trace.get("anchors", []), found, selected)
+        if found else {"nodes": [], "edges": []}
+    )
+    qu = req_usage.get("input_tokens", 0) + req_usage.get("output_tokens", 0)
+    return {
+        "engine": trace.get("engine", "postgres-hybrid"),
+        "graph_error": trace.get("graph_error"),
+        "hops": trace.get("hops"),
+        "direction": trace.get("direction"),
+        "anchors": len(trace.get("anchors", [])),
+        "graph_nodes_examined": trace.get("nodes_examined", 0),
+        "graph_edges_traversed": trace.get("edges_traversed", 0),
+        "candidate_sources": len(candidates),
+        "selected_sources": len(selected),
+        "files_consulted": len({c.path for c in included}),
+        "question_tokens": estimate_tokens(query),
+        "query_understanding_tokens": qu,
+        "context_tokens": context.total_tokens if context else 0,
+        "answer_tokens": out_tok,
+        "total_model_tokens": qu + in_tok + out_tok,
+        "retrieval_ms": retrieval_ms,
+        "graph_ms": trace.get("graph_ms", 0),
+        "generation_ms": generation_ms,
+        "total_ms": total_ms,
+        "selected_ids": sorted(selected),
+        "path": path,
+        # never a claim: a percentage exists only after a real benchmark run
+        "token_reduction": "not_benchmarked",
+    }

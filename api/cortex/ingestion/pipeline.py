@@ -83,6 +83,7 @@ async def handle_ingest_source(job_id: uuid.UUID, payload: dict[str, Any]) -> No
             await _link_edges(session, version_id, unresolved_edges, stats, alias_resolver)
             await session.commit()
 
+        await _build_knowledge_graph(job_id, source_id, version_id, uri, stats)
         await _embed_artifacts(job_id, version_id, stats)
         await _build_baseline_chunks(job_id, version_id, files, stats)
         await checkpoint(job_id, stage="finalizing")
@@ -400,6 +401,33 @@ async def _link_edges(
             },
         )
         stats["edges"] += 1
+
+
+async def _build_knowledge_graph(
+    job_id: uuid.UUID, source_id: uuid.UUID, version_id: uuid.UUID, uri: str, stats: dict
+) -> None:
+    """GRAPH: project artifacts + edges into Neo4j so Graph-RAG can traverse them.
+
+    When Neo4j is configured, a failure here fails the job (retryable) - a
+    version is never marked READY with a missing graph. When it is not
+    configured the graph is recorded as disabled, never faked.
+    """
+    from cortex import graphstore
+
+    if not graphstore.enabled():
+        stats["graph"] = {"status": "disabled"}
+        return
+    await checkpoint(job_id, stage="building_graph")
+    factory = get_session_factory()
+    async with factory() as session:
+        name = (await session.execute(
+            text("SELECT display_name FROM source WHERE id = :id"), {"id": source_id}
+        )).scalar_one()
+    try:
+        stats["graph"] = await graphstore.build_graph(factory, source_id, version_id, name, uri)
+    except graphstore.GraphUnavailable as exc:
+        raise RuntimeError(f"Knowledge graph build failed (Neo4j): {exc}") from exc
+    log.info("knowledge graph built: %s", stats["graph"])
 
 
 async def _embed_artifacts(job_id: uuid.UUID, version_id: uuid.UUID, stats: dict) -> None:

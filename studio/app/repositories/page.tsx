@@ -72,6 +72,12 @@ export default function RepositoriesPage() {
                     <div className="mt-1 font-mono text-[11px] text-ink-500">
                       {v.commit_sha.slice(0, 10)} · {v.stats?.artifacts ?? "?"} artifacts ·{" "}
                       {v.stats?.edges ?? "?"} edges · {v.stats?.files ?? "?"} files
+                      {v.stats?.graph?.status === "ready" && (
+                        <span className="text-signal-green"> · knowledge graph ready</span>
+                      )}
+                      {v.stats?.graph?.status === "disabled" && (
+                        <span className="text-signal-amber"> · graph off (Neo4j not configured)</span>
+                      )}
                     </div>
                   )}
                 </div>
